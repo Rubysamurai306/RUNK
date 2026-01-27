@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=RUNK-MAX
-Comment=Rafael’s Ultimate Ninja Keyspammer (Wayland)
+Comment=Rafael’s Ultimate Ninja Keyspammer (GUI)
 Exec=@EXEC@
 Icon=@ICON@
 Terminal=false
