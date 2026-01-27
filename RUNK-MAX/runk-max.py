@@ -124,7 +124,7 @@ def normalize_config(cfg: dict, fallback: dict) -> dict:
 class EngineThread:
     """
     Self-contained engine:
-    - starts ydotoold on Start (user-mode)
+    - starts ydotoold on Start (user-mode) on a RUNK-specific socket
     - injects key events via ydotool
     - supports pause/resume + stop
     - uses config with per-key enable/disable
@@ -137,6 +137,7 @@ class EngineThread:
 
         self.ydotoold_proc: subprocess.Popen | None = None
         self.socket_path: str | None = None
+        self.started_ydotoold: bool = False  # track ownership so we don't break other tools
 
     def start(self, config: dict, on_status):
         if self.thread and self.thread.is_alive():
@@ -188,7 +189,7 @@ class EngineThread:
         idle_enabled = bool(config.get("idle_enabled", True))
         idle_chance = int(config.get("idle_chance", 10))
         idle_min = float(config.get("idle_min", 1.0))
-        idle_max = float(config.get("idle_max", 3.0))
+        idle_max = float(config.get("idle_max", 3.5))  # keep consistent with defaults
 
         double_enabled = bool(config.get("double_tap_enabled", True))
         double_chance = int(config.get("double_tap_chance", 8))
@@ -264,32 +265,29 @@ class EngineThread:
         self._stop_ydotoold()
 
     def _ensure_ydotoold(self) -> bool:
+        """
+        Always start our own ydotoold instance on a RUNK-specific socket.
+        This avoids conflicts with other tools and ensures our ydotool calls work.
+        """
         xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
         if xdg_runtime:
-            self.socket_path = os.path.join(xdg_runtime, "ydotool.sock")
+            self.socket_path = os.path.join(xdg_runtime, "ydotool-runk.sock")
         else:
-            self.socket_path = str(Path.home() / ".ydotool_socket")
+            self.socket_path = str(Path.home() / ".ydotool_runk_socket")
 
         env = os.environ.copy()
         env["YDOTOOL_SOCKET"] = self.socket_path
 
+        # Clean stale socket from previous crashes (ours)
         try:
-            r = subprocess.run(
-                ["pgrep", "-u", str(os.getuid()), "ydotoold"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            if r.returncode == 0:
-                return True
+            os.remove(self.socket_path)
+        except FileNotFoundError:
+            pass
         except Exception:
+            # If we can't remove it, starting may fail anyway; still attempt.
             pass
 
         try:
-            try:
-                os.remove(self.socket_path)
-            except FileNotFoundError:
-                pass
-
             uid = os.getuid()
             gid = os.getgid()
             self.ydotoold_proc = subprocess.Popen(
@@ -298,24 +296,35 @@ class EngineThread:
                 stderr=subprocess.DEVNULL,
                 env=env
             )
+            self.started_ydotoold = True
             time.sleep(0.25)
             return True
+        except FileNotFoundError:
+            return False
         except Exception:
             return False
 
     def _stop_ydotoold(self):
+        # Only terminate if we started it
         if self.ydotoold_proc and self.ydotoold_proc.poll() is None:
             self.ydotoold_proc.terminate()
             try:
                 self.ydotoold_proc.wait(timeout=1.0)
             except subprocess.TimeoutExpired:
                 self.ydotoold_proc.kill()
+
         self.ydotoold_proc = None
-        if self.socket_path:
+
+        # Only remove socket if it was ours
+        if self.started_ydotoold and self.socket_path:
             try:
                 os.remove(self.socket_path)
             except FileNotFoundError:
                 pass
+            except Exception:
+                pass
+
+        self.started_ydotoold = False
 
 
 class RUNKMaxWindow(Gtk.ApplicationWindow):
