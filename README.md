@@ -1,0 +1,2 @@
+Main repo. RUNK will be made into 2 different versions. 1 minimal for powerusers with minimal overhead inside a terminal, mostly for powerusers or people who want to add more features. and 1 thats fully fledged out with GUI and individual options that can simply be chosen by a checkbox instead of commenting out parts of the script. development has just started so be patient.
+support for CachyOS and other Arch derivatives including Arch is main priority for RUNK. Other distros will get support further down the road with proper documentation. be patient. God bless.
