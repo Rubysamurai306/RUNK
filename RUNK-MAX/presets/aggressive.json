@@ -1,0 +1,13 @@
+{
+  "enable_diagonals": true,
+  "min_delay": 0.12,
+  "max_delay": 0.40,
+  "press_min": 0.06,
+  "press_max": 0.22,
+  "idle_enabled": true,
+  "idle_chance": 16,
+  "idle_min": 0.8,
+  "idle_max": 2.0,
+  "double_tap_enabled": true,
+  "double_tap_chance": 5
+}
