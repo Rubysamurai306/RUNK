@@ -9,7 +9,7 @@ IDLE_CHANCE=10      # 1 in 10 loops triggers idle gap
 IDLE_MIN=1          # min idle seconds
 IDLE_MAX=3          # max idle seconds
 DOUBLE_TAP_CHANCE=8 # 1 in 8 loops triggers double tap
-PAUSE_KEY=49        # keycode for ' (apostrophe)
+PAUSE_KEY=49        # keycode for ' (apostrophe), can be changed to anything, just find the numerical value of wished key. only works with singular key, Wayland is finicky to work with when it comes to recording key inputs. RUNK-Max will have this made.
 # ----------------------------------------
 
 USER_ID="$(id -u)"
