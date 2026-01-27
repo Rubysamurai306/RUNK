@@ -15,6 +15,7 @@ APP_ID = "com.rafael.runkmax"
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIR / "config" / "current.json"
+PRESETS_DIR = SCRIPT_DIR / "presets"
 
 DEFAULT_CONFIG = {
     "keys": {
@@ -42,16 +43,7 @@ def load_json(path: Path, fallback: dict) -> dict:
         with open(path, "r", encoding="utf-8") as f:
             d = json.load(f)
         if isinstance(d, dict):
-            # shallow merge; nested keys handled with defaults below
-            merged = fallback.copy()
-            merged.update(d)
-            # ensure nested keys exist
-            merged.setdefault("keys", fallback["keys"])
-            for k in ("W", "A", "S", "D"):
-                merged["keys"].setdefault(k, fallback["keys"][k])
-                merged["keys"][k].setdefault("code", fallback["keys"][k]["code"])
-                merged["keys"][k].setdefault("enabled", fallback["keys"][k]["enabled"])
-            return merged
+            return normalize_config(d, fallback)
     except FileNotFoundError:
         pass
     except Exception:
@@ -65,6 +57,68 @@ def save_json(path: Path, data: dict) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, sort_keys=True)
     tmp.replace(path)
+
+
+def normalize_config(cfg: dict, fallback: dict) -> dict:
+    """
+    Make sure nested keys exist and types are sane enough for the UI.
+    Shallow-merge with defaults, then fix nested structure for keys.
+    """
+    merged = fallback.copy()
+    merged.update(cfg)
+
+    merged.setdefault("keys", fallback["keys"])
+    for k in ("W", "A", "S", "D"):
+        merged["keys"].setdefault(k, fallback["keys"][k])
+        merged["keys"][k].setdefault("code", fallback["keys"][k]["code"])
+        merged["keys"][k].setdefault("enabled", fallback["keys"][k]["enabled"])
+
+    # Coerce obvious scalar types (best-effort)
+    def b(x, default=False):
+        return bool(x) if isinstance(x, (bool, int)) else default
+
+    def f(x, default=0.0):
+        try:
+            return float(x)
+        except Exception:
+            return default
+
+    def i(x, default=0):
+        try:
+            return int(x)
+        except Exception:
+            return default
+
+    merged["enable_diagonals"] = b(merged.get("enable_diagonals", True), True)
+    merged["min_delay"] = f(merged.get("min_delay", 0.25), 0.25)
+    merged["max_delay"] = f(merged.get("max_delay", 0.90), 0.90)
+    merged["press_min"] = f(merged.get("press_min", 0.06), 0.06)
+    merged["press_max"] = f(merged.get("press_max", 0.20), 0.20)
+    merged["idle_enabled"] = b(merged.get("idle_enabled", True), True)
+    merged["idle_chance"] = i(merged.get("idle_chance", 10), 10)
+    merged["idle_min"] = f(merged.get("idle_min", 1.0), 1.0)
+    merged["idle_max"] = f(merged.get("idle_max", 3.5), 3.5)
+    merged["double_tap_enabled"] = b(merged.get("double_tap_enabled", True), True)
+    merged["double_tap_chance"] = i(merged.get("double_tap_chance", 8), 8)
+
+    for k in ("W", "A", "S", "D"):
+        merged["keys"][k]["enabled"] = b(merged["keys"][k].get("enabled", True), True)
+        merged["keys"][k]["code"] = i(merged["keys"][k].get("code", fallback["keys"][k]["code"]),
+                                      fallback["keys"][k]["code"])
+
+    # Normalize ranges
+    if merged["max_delay"] < merged["min_delay"]:
+        merged["max_delay"] = merged["min_delay"]
+    if merged["press_max"] < merged["press_min"]:
+        merged["press_max"] = merged["press_min"]
+    if merged["idle_max"] < merged["idle_min"]:
+        merged["idle_max"] = merged["idle_min"]
+
+    # Clamp some values to sensible ranges to avoid weird UI states
+    merged["idle_chance"] = max(2, merged["idle_chance"])
+    merged["double_tap_chance"] = max(2, merged["double_tap_chance"])
+
+    return merged
 
 
 class EngineThread:
@@ -110,19 +164,16 @@ class EngineThread:
         def status(s: str):
             GLib.idle_add(on_status, s)
 
-        # Validate enabled keys
         enabled = {k: v for k, v in config["keys"].items() if v.get("enabled")}
         if len(enabled) < 2:
             status("Stopped: enable at least 2 keys")
             return
 
-        # Prepare axis availability
         vert = [config["keys"][k]["code"] for k in ("W", "S") if config["keys"][k]["enabled"]]
         horiz = [config["keys"][k]["code"] for k in ("A", "D") if config["keys"][k]["enabled"]]
 
         enable_diag = bool(config.get("enable_diagonals", True)) and (len(vert) > 0 and len(horiz) > 0)
 
-        # Start ydotoold (user-mode)
         if not self._ensure_ydotoold():
             status("Stopped: ydotoold missing or failed")
             return
@@ -142,26 +193,23 @@ class EngineThread:
         double_enabled = bool(config.get("double_tap_enabled", True))
         double_chance = int(config.get("double_tap_chance", 8))
 
-        # Helper: run ydotool with correct socket
         env = os.environ.copy()
         if self.socket_path:
             env["YDOTOOL_SOCKET"] = self.socket_path
 
         def press_key(code: int):
-            # press
-            subprocess.run(["ydotool", "key", f"{code}:1"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["ydotool", "key", f"{code}:1"], env=env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(random.uniform(press_min, press_max))
-            # release
-            subprocess.run(["ydotool", "key", f"{code}:0"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["ydotool", "key", f"{code}:0"], env=env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         def maybe_double(code: int):
             press_key(code)
             if double_enabled and random.randint(1, max(2, double_chance)) == 1:
-                # quick double tap
                 time.sleep(random.uniform(0.03, 0.12))
                 press_key(code)
 
-        # Main loop: drift-free paired moves (and optional diagonals)
         while not self._stop.is_set():
             while self._pause.is_set() and not self._stop.is_set():
                 status("Paused")
@@ -172,70 +220,50 @@ class EngineThread:
 
             status("Running")
 
-            # occasional idle gap
             if idle_enabled and random.randint(1, max(2, idle_chance)) == 1:
                 time.sleep(random.uniform(idle_min, idle_max))
 
-            # Choose movement type: axis or diagonal (if allowed)
             move_type = random.choice(["axis", "diag"]) if enable_diag else "axis"
-
             keys: list[int]
 
             if move_type == "diag":
-                # pick one from vertical and one from horizontal (random direction within enabled)
                 k1 = random.choice(vert)
                 k2 = random.choice(horiz)
                 keys = [k1, k2]
             else:
-                # axis move: pick vertical pair if possible else horizontal pair else any enabled
-                axis = None
                 if vert and horiz:
                     axis = random.choice(["vert", "horiz"])
                 elif vert:
                     axis = "vert"
-                elif horiz:
+                else:
                     axis = "horiz"
 
                 if axis == "vert":
-                    # pick one direction then opposite (drift-free)
-                    # choose W or S from enabled list
                     first = random.choice(vert)
-                    # opposite should be the other one if available; if only one enabled, fallback to same
                     opp = [c for c in vert if c != first]
                     second = opp[0] if opp else first
                     keys = [first, second]
-                elif axis == "horiz":
+                else:
                     first = random.choice(horiz)
                     opp = [c for c in horiz if c != first]
                     second = opp[0] if opp else first
                     keys = [first, second]
-                else:
-                    # fallback: random from enabled
-                    pool = [v["code"] for v in enabled.values()]
-                    first = random.choice(pool)
-                    second = random.choice(pool)
-                    keys = [first, second]
 
-            # Micro-randomize press order for the "forward" half
             if random.random() < 0.5:
                 keys = list(reversed(keys))
 
-            # Press sequence
             for code in keys:
                 maybe_double(code)
 
-            # Drift-free "return": press reverse order (paired cancellation)
             for code in reversed(keys):
                 maybe_double(code)
 
-            # delay between loops
             time.sleep(random.uniform(min_delay, max_delay))
 
         status("Stopped")
         self._stop_ydotoold()
 
     def _ensure_ydotoold(self) -> bool:
-        # Pick a socket path
         xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
         if xdg_runtime:
             self.socket_path = os.path.join(xdg_runtime, "ydotool.sock")
@@ -245,7 +273,6 @@ class EngineThread:
         env = os.environ.copy()
         env["YDOTOOL_SOCKET"] = self.socket_path
 
-        # If ydotoold already running for this user, just use it
         try:
             r = subprocess.run(
                 ["pgrep", "-u", str(os.getuid()), "ydotoold"],
@@ -257,7 +284,6 @@ class EngineThread:
         except Exception:
             pass
 
-        # Start it
         try:
             try:
                 os.remove(self.socket_path)
@@ -274,13 +300,10 @@ class EngineThread:
             )
             time.sleep(0.25)
             return True
-        except FileNotFoundError:
-            return False
         except Exception:
             return False
 
     def _stop_ydotoold(self):
-        # Only terminate if we started it
         if self.ydotoold_proc and self.ydotoold_proc.poll() is None:
             self.ydotoold_proc.terminate()
             try:
@@ -288,7 +311,6 @@ class EngineThread:
             except subprocess.TimeoutExpired:
                 self.ydotoold_proc.kill()
         self.ydotoold_proc = None
-        # Best-effort socket cleanup
         if self.socket_path:
             try:
                 os.remove(self.socket_path)
@@ -299,7 +321,7 @@ class EngineThread:
 class RUNKMaxWindow(Gtk.ApplicationWindow):
     def __init__(self, app: Gtk.Application):
         super().__init__(application=app, title="RUNK-MAX")
-        self.set_default_size(560, 520)
+        self.set_default_size(600, 560)
 
         self.config = load_json(CONFIG_PATH, DEFAULT_CONFIG)
         save_json(CONFIG_PATH, self.config)
@@ -335,6 +357,20 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         controls.append(self.stop_btn)
 
         root.append(controls)
+
+        # Presets row
+        presets_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        presets_row.append(Gtk.Label(label="Preset:", xalign=0.0))
+
+        self.preset_names = self.list_presets()
+        self.preset_combo = Gtk.DropDown.new_from_strings(self.preset_names)
+        presets_row.append(self.preset_combo)
+
+        load_btn = Gtk.Button(label="Load preset")
+        load_btn.connect("clicked", self.on_load_preset)
+        presets_row.append(load_btn)
+
+        root.append(presets_row)
 
         # Keys section
         frame_keys = Gtk.Frame(label="Keys (enable/disable + keycode)")
@@ -372,7 +408,7 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         frame_opts.set_child(grid)
 
         r = 0
-        self.diag_check = Gtk.CheckButton(label="Enable diagonals (needs one vertical + one horizontal enabled)")
+        self.diag_check = Gtk.CheckButton(label="Enable diagonals (needs vertical + horizontal enabled)")
         self.diag_check.connect("toggled", self.on_any_change)
         grid.attach(self.diag_check, 0, r, 2, 1)
         r += 1
@@ -435,28 +471,57 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         grid.attach(self.double_chance, 1, r, 1, 1)
         r += 1
 
-        # Apply config to UI
         self.push_config_to_ui()
 
-        # Handle close: stop engine
         self.connect("close-request", self.on_close)
 
+    # ----- Presets -----
+    def list_presets(self) -> list[str]:
+        if not PRESETS_DIR.exists():
+            return ["(none)"]
+        names = sorted([p.name for p in PRESETS_DIR.glob("*.json")])
+        return names if names else ["(none)"]
+
+    def on_load_preset(self, *_):
+        if self.engine.thread and self.engine.thread.is_alive():
+            self.set_status("Stop engine before loading preset")
+            return
+
+        names = self.list_presets()
+        if names == ["(none)"]:
+            self.set_status("No presets found")
+            return
+
+        idx = self.preset_combo.get_selected()
+        if idx < 0 or idx >= len(names):
+            return
+
+        preset_path = PRESETS_DIR / names[idx]
+        try:
+            preset_cfg = load_json(preset_path, DEFAULT_CONFIG)
+        except Exception as e:
+            self.set_status(f"Preset load failed: {e}")
+            return
+
+        self.config = normalize_config(preset_cfg, DEFAULT_CONFIG)
+        self.push_config_to_ui()
+        save_json(CONFIG_PATH, self.config)
+        self.set_status(f"Loaded preset: {preset_path.name}")
+
+    # ----- lifecycle -----
     def on_close(self, *_):
         self.engine.stop()
-        return False  # allow close
+        return False
 
     def set_status(self, text: str):
         self.status_label.set_label(f"Status: {text}")
-
-        running = (text.startswith("Running") or text == "Paused")
-        paused = (text == "Paused")
-
-        # Keep buttons consistent
+        running = (text == "Running" or text == "Paused")
         self.start_btn.set_sensitive(not running)
         self.pause_btn.set_sensitive(running)
         self.stop_btn.set_sensitive(running)
         return False
 
+    # ----- controls -----
     def on_start(self, *_):
         self.pull_ui_to_config()
         save_json(CONFIG_PATH, self.config)
@@ -473,13 +538,12 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         self.pull_ui_to_config()
         save_json(CONFIG_PATH, self.config)
 
+    # ----- UI <-> config -----
     def push_config_to_ui(self):
-        # Keys
         for k, (chk, spin) in self.key_widgets.items():
             chk.set_active(bool(self.config["keys"][k]["enabled"]))
             spin.set_value(int(self.config["keys"][k]["code"]))
 
-        # Options
         self.diag_check.set_active(bool(self.config.get("enable_diagonals", True)))
         self.min_delay.set_value(float(self.config.get("min_delay", 0.25)))
         self.max_delay.set_value(float(self.config.get("max_delay", 0.90)))
@@ -495,13 +559,12 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         self.double_chance.set_value(int(self.config.get("double_tap_chance", 8)))
 
     def pull_ui_to_config(self):
-        # Keys
         for k, (chk, spin) in self.key_widgets.items():
             self.config["keys"][k]["enabled"] = bool(chk.get_active())
             self.config["keys"][k]["code"] = int(spin.get_value())
 
-        # Options
         self.config["enable_diagonals"] = bool(self.diag_check.get_active())
+
         self.config["min_delay"] = float(self.min_delay.get_value())
         self.config["max_delay"] = float(self.max_delay.get_value())
         if self.config["max_delay"] < self.config["min_delay"]:
