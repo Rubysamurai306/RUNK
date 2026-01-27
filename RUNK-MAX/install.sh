@@ -1,18 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# -----------------------------
-# RUNK-MAX Installer (Arch/Wayland)
-# -----------------------------
-# Location of this file (your layout):
-#   RUNK/RUNK-MAX/install.sh
-#
-# Run:
-#   sudo ./install.sh
-# or:
-#   ./install.sh   (will sudo when needed)
-# -----------------------------
-
 log()  { printf "[RUNK] %s\n" "$*"; }
 warn() { printf "[RUNK][WARN] %s\n" "$*" >&2; }
 die()  { printf "[RUNK][ERR] %s\n" "$*" >&2; exit 1; }
@@ -25,13 +13,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAX_DIR="$SCRIPT_DIR"
 
 ROOT_DIR="$(cd "$MAX_DIR/.." && pwd)"
-MINIMAL_DIR="$ROOT_DIR/minimal"
+MINIMAL_DIR="$ROOT_DIR/RUNK-minimal"   # matches your repo tree name
 
 # Validate expected files in RUNK-MAX/
 [[ -f "$MAX_DIR/runk-max.py" ]] || die "Missing: $MAX_DIR/runk-max.py"
-[[ -d "$MAX_DIR/config" ]] || warn "Missing: $MAX_DIR/config (expected config/current.json)."
-[[ -f "$MAX_DIR/runk.desktop.in" ]] || warn "Missing: $MAX_DIR/runk.desktop.in (template optional if you generate desktop via heredoc)."
-[[ -d "$MINIMAL_DIR" ]] || warn "Missing: $MINIMAL_DIR (ok if MAX does not call minimal yet)."
+[[ -f "$MAX_DIR/config/current.json" ]] || warn "Missing: $MAX_DIR/config/current.json (GUI will create it)."
+[[ -d "$MAX_DIR/presets" ]] || warn "Missing: $MAX_DIR/presets (preset dropdown will be empty)."
+[[ -d "$MINIMAL_DIR" ]] || warn "Missing: $MINIMAL_DIR (ok; MAX is standalone)."
 
 need_root() {
   if [[ "$(id -u)" -ne 0 ]]; then
@@ -114,8 +102,6 @@ EOF
 }
 
 install_icon_user() {
-  # Put icon into a standard user icon directory so Icon= can point to it.
-  # KDE/GNOME will pick it up reliably.
   local icon_src="$MAX_DIR/assets/icon.png"
   local icon_dir="$TARGET_HOME/.local/share/icons/hicolor/256x256/apps"
   local icon_dst="$icon_dir/runk-max.png"
@@ -131,7 +117,6 @@ install_icon_user() {
   cp "$icon_src" "$icon_dst"
   chown "$TARGET_USER":"$TARGET_USER" "$icon_dst"
 
-  # return the path for Icon=
   echo "$icon_dst"
 }
 
@@ -158,7 +143,6 @@ EOF
 
   chown "$TARGET_USER":"$TARGET_USER" "$desktop_path"
 
-  # Refresh KDE cache if available
   as_target_user "command -v kbuildsycoca5 >/dev/null && kbuildsycoca5 || true"
 }
 
@@ -169,8 +153,8 @@ print_post_install() {
 
 Installed/configured:
 - Packages: ydotool, jq, python, python-gobject, gtk4
-- udev rule: /etc/udev/rules.d/99-uinput-runk.rules (uinput group permissions)
-- module load: /etc/modules-load.d/uinput-runk.conf (loads uinput at boot)
+- udev rule: /etc/udev/rules.d/99-uinput-runk.rules
+- module load: /etc/modules-load.d/uinput-runk.conf
 - launcher: $TARGET_HOME/.local/bin/runk-max
 - desktop entry: $TARGET_HOME/.local/share/applications/runk-max.desktop
 - icon: $TARGET_HOME/.local/share/icons/hicolor/256x256/apps/runk-max.png (if assets/icon.png existed)
