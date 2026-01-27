@@ -11,39 +11,26 @@ set -euo pipefail
 #   sudo ./install.sh
 # or:
 #   ./install.sh   (will sudo when needed)
-#
-# This installer:
-# - Installs deps (Arch/pacman)
-# - Ensures uinput group + user membership
-# - Installs a robust udev rule for /dev/uinput
-# - Ensures uinput module loads now + at boot
-# - Installs launcher wrapper to ~/.local/bin/runk-max
-# - Installs .desktop entry to ~/.local/share/applications/runk-max.desktop
-#
-# NOTE: No persistent ydotoold systemd service is installed/enabled.
-#       RUNK-MAX should start ydotoold when the app runs.
 # -----------------------------
 
 log()  { printf "[RUNK] %s\n" "$*"; }
 warn() { printf "[RUNK][WARN] %s\n" "$*" >&2; }
 die()  { printf "[RUNK][ERR] %s\n" "$*" >&2; exit 1; }
 
-# Determine target user (the interactive desktop user)
 TARGET_USER="${SUDO_USER:-$(id -un)}"
 TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
 [[ -n "$TARGET_HOME" && -d "$TARGET_HOME" ]] || die "Could not determine home for user: $TARGET_USER"
 
-# This installer sits inside RUNK/RUNK-MAX/
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAX_DIR="$SCRIPT_DIR"
 
-# Optional: minimal is sibling of RUNK-MAX (RUNK/minimal)
 ROOT_DIR="$(cd "$MAX_DIR/.." && pwd)"
 MINIMAL_DIR="$ROOT_DIR/minimal"
 
 # Validate expected files in RUNK-MAX/
 [[ -f "$MAX_DIR/runk-max.py" ]] || die "Missing: $MAX_DIR/runk-max.py"
-[[ -f "$MAX_DIR/config.json" ]] || warn "Missing: $MAX_DIR/config.json (GUI can create it; presets recommended)."
+[[ -d "$MAX_DIR/config" ]] || warn "Missing: $MAX_DIR/config (expected config/current.json)."
+[[ -f "$MAX_DIR/runk.desktop.in" ]] || warn "Missing: $MAX_DIR/runk.desktop.in (template optional if you generate desktop via heredoc)."
 [[ -d "$MINIMAL_DIR" ]] || warn "Missing: $MINIMAL_DIR (ok if MAX does not call minimal yet)."
 
 need_root() {
@@ -53,7 +40,6 @@ need_root() {
 }
 
 as_target_user() {
-  # Run command as the target user (works when script is run with sudo)
   sudo -u "$TARGET_USER" env HOME="$TARGET_HOME" bash -lc "$*"
 }
 
@@ -88,7 +74,6 @@ install_udev_rule() {
   local rule_path="/etc/udev/rules.d/99-uinput-runk.rules"
   log "Installing udev rule: $rule_path"
 
-  # More robust than matching SUBSYSTEM=="misc" on all setups
   cat > "$rule_path" <<'EOF'
 # RUNK: allow uinput access for users in the uinput group
 KERNEL=="uinput", MODE="0660", GROUP="uinput", OPTIONS+="static_node=uinput"
@@ -110,7 +95,6 @@ ensure_uinput_module_boot() {
 }
 
 install_launcher_wrapper() {
-  # Create a stable entrypoint in ~/.local/bin so .desktop Exec doesn't depend on cwd.
   local bin_dir="$TARGET_HOME/.local/bin"
   local wrapper="$bin_dir/runk-max"
 
@@ -129,9 +113,33 @@ EOF
   chown "$TARGET_USER":"$TARGET_USER" "$wrapper"
 }
 
+install_icon_user() {
+  # Put icon into a standard user icon directory so Icon= can point to it.
+  # KDE/GNOME will pick it up reliably.
+  local icon_src="$MAX_DIR/assets/icon.png"
+  local icon_dir="$TARGET_HOME/.local/share/icons/hicolor/256x256/apps"
+  local icon_dst="$icon_dir/runk-max.png"
+
+  if [[ ! -f "$icon_src" ]]; then
+    warn "Icon not found at $icon_src — falling back to Icon=keyboard"
+    echo "keyboard"
+    return 0
+  fi
+
+  log "Installing icon: $icon_dst"
+  mkdir -p "$icon_dir"
+  cp "$icon_src" "$icon_dst"
+  chown "$TARGET_USER":"$TARGET_USER" "$icon_dst"
+
+  # return the path for Icon=
+  echo "$icon_dst"
+}
+
 install_desktop_entry_user() {
   local app_dir="$TARGET_HOME/.local/share/applications"
   local desktop_path="$app_dir/runk-max.desktop"
+  local icon_value
+  icon_value="$(install_icon_user)"
 
   log "Installing .desktop entry: $desktop_path"
   mkdir -p "$app_dir"
@@ -141,7 +149,7 @@ install_desktop_entry_user() {
 Name=RUNK-MAX
 Comment=Rafael's Ultimate Ninja Keyspammer (GUI)
 Exec=$TARGET_HOME/.local/bin/runk-max
-Icon=keyboard
+Icon=$icon_value
 Terminal=false
 Type=Application
 Categories=Utility;Game;
@@ -165,6 +173,7 @@ Installed/configured:
 - module load: /etc/modules-load.d/uinput-runk.conf (loads uinput at boot)
 - launcher: $TARGET_HOME/.local/bin/runk-max
 - desktop entry: $TARGET_HOME/.local/share/applications/runk-max.desktop
+- icon: $TARGET_HOME/.local/share/icons/hicolor/256x256/apps/runk-max.png (if assets/icon.png existed)
 
 Important:
 - If the installer added $TARGET_USER to the uinput group, you MUST log out and log back in.
@@ -180,7 +189,6 @@ main() {
   log "MAX_DIR: $MAX_DIR"
   log "Target user: $TARGET_USER"
 
-  # Use sudo for system changes when needed; script can be run with or without sudo.
   if [[ "$(id -u)" -ne 0 ]]; then
     log "Not running as root; will prompt for sudo as needed."
   fi
