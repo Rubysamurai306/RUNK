@@ -1,16 +1,29 @@
 #!/usr/bin/env python3
+# FILE: RUNK-MAX/runk-max.py
 """
 RUNK-MAX (Wayland-oriented)
 
-Keycode capture notes:
-- GDK hardware_keycode is typically an XKB keycode (evdev + 8).
-- ydotool expects evdev codes (e.g., KEY_W=17), so we store (hardware_keycode - 8).
+Storage (repo stays clean):
+- Current config:
+  $XDG_CONFIG_HOME/runk-max/current.json  OR  ~/.config/runk-max/current.json
+- Presets:
+  $XDG_CONFIG_HOME/runk-max/presets/*.json  OR  ~/.config/runk-max/presets/*.json
+
+First run:
+- If current.json missing, seed from presets/Default.json if present.
+- If presets missing, auto-create Default.json, Gaming.json, subtle.json in user presets dir.
+
+CLI:
+- --reset  deletes current.json (next launch reseeds from Default.json)
 """
+from __future__ import annotations
+
 import json
 import os
 import random
 import re
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -23,11 +36,7 @@ from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
 APP_ID = "com.rafael.runkmax"
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = SCRIPT_DIR / "config" / "current.json"
-PRESETS_DIR = SCRIPT_DIR / "presets"
-
-DEFAULT_CONFIG = {
+DEFAULT_CONFIG: dict = {
     "keys": {
         "W": {"code": 17, "enabled": True, "label": "W"},
         "A": {"code": 30, "enabled": True, "label": "A"},
@@ -40,16 +49,30 @@ DEFAULT_CONFIG = {
     "press_min": 0.06,
     "press_max": 0.20,
     "idle_enabled": True,
-    "idle_chance": 10,  # 1 in N loops
+    "idle_chance": 10,
     "idle_min": 1.0,
     "idle_max": 3.5,
     "double_tap_enabled": True,
-    "double_tap_chance": 8,  # 1 in N presses
+    "double_tap_chance": 8,
 }
 
 
 def _deepcopy_jsonish(obj):
     return json.loads(json.dumps(obj))
+
+
+def get_user_config_dir() -> Path:
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg) if xdg else (Path.home() / ".config")
+    return base / "runk-max"
+
+
+def get_user_config_path() -> Path:
+    return get_user_config_dir() / "current.json"
+
+
+def get_user_presets_dir() -> Path:
+    return get_user_config_dir() / "presets"
 
 
 def load_json(path: Path, fallback: dict) -> dict:
@@ -134,7 +157,6 @@ def normalize_config(cfg: dict, fallback: dict) -> dict:
 
     merged["idle_chance"] = max(2, merged["idle_chance"])
     merged["double_tap_chance"] = max(2, merged["double_tap_chance"])
-
     return merged
 
 
@@ -155,6 +177,86 @@ def _sanitize_preset_name(name: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9 _\-\.\(\)]+", name):
         return ""
     return name
+
+
+def ensure_default_presets_exist() -> None:
+    presets_dir = get_user_presets_dir()
+    presets_dir.mkdir(parents=True, exist_ok=True)
+
+    default_path = presets_dir / "Default.json"
+    gaming_path = presets_dir / "Gaming.json"
+    subtle_path = presets_dir / "subtle.json"
+
+    if not default_path.exists():
+        save_json(
+            default_path,
+            {
+                "keys": {
+                    "W": {"code": 17, "enabled": True, "label": "W"},
+                    "A": {"code": 30, "enabled": False, "label": "A"},
+                    "S": {"code": 31, "enabled": False, "label": "S"},
+                    "D": {"code": 32, "enabled": False, "label": "D"},
+                },
+                "enable_diagonals": False,
+                "min_delay": 0.25,
+                "max_delay": 0.90,
+                "press_min": 0.06,
+                "press_max": 0.20,
+                "idle_enabled": True,
+                "idle_chance": 10,
+                "idle_min": 1.0,
+                "idle_max": 3.5,
+                "double_tap_enabled": True,
+                "double_tap_chance": 8,
+            },
+        )
+
+    if not gaming_path.exists():
+        save_json(gaming_path, normalize_config(_deepcopy_jsonish(DEFAULT_CONFIG), DEFAULT_CONFIG))
+
+    if not subtle_path.exists():
+        save_json(
+            subtle_path,
+            {
+                "keys": {
+                    "W": {"code": 17, "enabled": True, "label": "W"},
+                    "A": {"code": 30, "enabled": True, "label": "A"},
+                    "S": {"code": 31, "enabled": True, "label": "S"},
+                    "D": {"code": 32, "enabled": True, "label": "D"},
+                },
+                "enable_diagonals": True,
+                "min_delay": 0.8,
+                "max_delay": 1.6,
+                "press_min": 0.05,
+                "press_max": 0.12,
+                "idle_enabled": True,
+                "idle_chance": 6,
+                "idle_min": 2.0,
+                "idle_max": 5.0,
+                "double_tap_enabled": True,
+                "double_tap_chance": 20,
+            },
+        )
+
+
+def handle_cli_reset_if_requested(argv: list[str]) -> tuple[bool, list[str]]:
+    """
+    Returns: (handled_and_exited, filtered_argv_for_gtk)
+    """
+    flag = "--reset"
+    if flag not in argv:
+        return False, argv
+
+    ensure_default_presets_exist()
+    cfg = get_user_config_path()
+    try:
+        cfg.unlink(missing_ok=True)  # py3.8+ supports missing_ok
+    except TypeError:
+        if cfg.exists():
+            cfg.unlink()
+    print(f"[RUNK] Reset complete: deleted {cfg}")
+    filtered = [a for a in argv if a != flag]
+    return True, filtered
 
 
 class EngineThread:
@@ -185,10 +287,7 @@ class EngineThread:
         self._stop_ydotoold()
 
     def toggle_pause(self):
-        if self._pause.is_set():
-            self._pause.clear()
-        else:
-            self._pause.set()
+        self._pause.set() if not self._pause.is_set() else self._pause.clear()
 
     def _run(self, config: dict, on_status):
         def status(s: str):
@@ -442,13 +541,21 @@ class ConfirmOverwriteWindow(Gtk.Window):
 class RUNKMaxWindow(Gtk.ApplicationWindow):
     def __init__(self, app: Gtk.Application):
         super().__init__(application=app, title="RUNK-MAX")
-        self.set_default_size(740, 630)
+        self.set_default_size(760, 640)
 
-        self.config = load_json(CONFIG_PATH, DEFAULT_CONFIG)
-        save_json(CONFIG_PATH, self.config)
+        ensure_default_presets_exist()
+
+        self.config_path = get_user_config_path()
+        default_preset = get_user_presets_dir() / "Default.json"
+
+        if not self.config_path.exists():
+            self.config = load_json(default_preset, DEFAULT_CONFIG) if default_preset.exists() else _deepcopy_jsonish(DEFAULT_CONFIG)
+        else:
+            self.config = load_json(self.config_path, DEFAULT_CONFIG)
+
+        save_json(self.config_path, self.config)
 
         self.engine = EngineThread()
-
         self.capture_target: str | None = None
         self._capturing_btn: Gtk.Button | None = None
 
@@ -608,26 +715,25 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         self.push_config_to_ui()
         self.connect("close-request", self.on_close)
 
-    # ---- presets ----
     def list_presets(self) -> list[str]:
-        if not PRESETS_DIR.exists():
+        presets_dir = get_user_presets_dir()
+        if not presets_dir.exists():
             return ["(none)"]
-        names = sorted([p.name for p in PRESETS_DIR.glob("*.json")])
+        names = sorted([p.name for p in presets_dir.glob("*.json")])
         return names if names else ["(none)"]
 
     def refresh_presets_dropdown(self, select_name: str | None):
         names = self.list_presets()
         model = Gtk.StringList.new(names)
         self.preset_combo.set_model(model)
-
-        if select_name and select_name in names:
-            self.preset_combo.set_selected(names.index(select_name))
-        else:
-            self.preset_combo.set_selected(0)
+        self.preset_combo.set_selected(names.index(select_name) if select_name in names else 0)
 
     def on_load_preset(self, *_):
         if self.engine.thread and self.engine.thread.is_alive():
             self.set_status("Stop engine before loading preset")
+            return
+        if self.capture_target:
+            self.set_status("Finish capture before loading preset")
             return
 
         names = self.list_presets()
@@ -639,12 +745,10 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         if idx < 0 or idx >= len(names):
             return
 
-        preset_path = PRESETS_DIR / names[idx]
-        preset_cfg = load_json(preset_path, DEFAULT_CONFIG)
-
-        self.config = normalize_config(preset_cfg, DEFAULT_CONFIG)
+        preset_path = get_user_presets_dir() / names[idx]
+        self.config = normalize_config(load_json(preset_path, DEFAULT_CONFIG), DEFAULT_CONFIG)
         self.push_config_to_ui()
-        save_json(CONFIG_PATH, self.config)
+        save_json(self.config_path, self.config)
         self.set_status(f"Loaded preset: {preset_path.name}")
 
     def on_save_preset_clicked(self, *_):
@@ -660,23 +764,22 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
                 self.set_status("Preset save canceled/invalid name")
                 return
 
-            PRESETS_DIR.mkdir(parents=True, exist_ok=True)
+            presets_dir = get_user_presets_dir()
+            presets_dir.mkdir(parents=True, exist_ok=True)
+
             filename = f"{name}.json" if not name.lower().endswith(".json") else name
-            preset_path = PRESETS_DIR / filename
+            preset_path = presets_dir / filename
 
             def write_preset():
                 self.pull_ui_to_config()
-                preset_cfg = normalize_config(self.config, DEFAULT_CONFIG)
-                save_json(preset_path, preset_cfg)
+                save_json(preset_path, normalize_config(self.config, DEFAULT_CONFIG))
                 self.refresh_presets_dropdown(select_name=preset_path.name)
                 self.set_status(f"Saved preset: {preset_path.name}")
 
             if preset_path.exists():
+
                 def on_choice(overwrite: bool):
-                    if overwrite:
-                        write_preset()
-                    else:
-                        self.set_status("Preset save canceled")
+                    self.set_status("Preset save canceled") if not overwrite else write_preset()
 
                 ConfirmOverwriteWindow(self, preset_path.name, on_choice).present()
                 return
@@ -685,7 +788,6 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
 
         PresetSaveWindow(self, do_save).present()
 
-    # ---- lifecycle ----
     def on_close(self, *_):
         self.engine.stop()
         return False
@@ -698,13 +800,12 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         self.stop_btn.set_sensitive(running)
         return False
 
-    # ---- controls ----
     def on_start(self, *_):
         if self.capture_target:
             self.set_status("Finish capture first")
             return
         self.pull_ui_to_config()
-        save_json(CONFIG_PATH, self.config)
+        save_json(self.config_path, self.config)
         self.engine.start(self.config, self.set_status)
 
     def on_pause(self, *_):
@@ -716,11 +817,10 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
 
     def on_any_change(self, *_):
         self.pull_ui_to_config()
-        save_json(CONFIG_PATH, self.config)
+        save_json(self.config_path, self.config)
 
-    # ---- capture ----
     def _set_capture_ui(self, capturing: bool, target_key: str | None):
-        for k, (_chk, _spin, _label, cap_btn) in self.key_widgets.items():
+        for _k, (_chk, _spin, _label, cap_btn) in self.key_widgets.items():
             cap_btn.set_sensitive(not capturing)
             cap_btn.set_label("Capture")
 
@@ -732,7 +832,9 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         else:
             self._capturing_btn = None
 
-        self.start_btn.set_sensitive(not capturing and not (self.engine.thread and self.engine.thread.is_alive()))
+        self.start_btn.set_sensitive(
+            not capturing and not (self.engine.thread and self.engine.thread.is_alive())
+        )
 
     def on_capture_clicked(self, _btn: Gtk.Button, key_name: str):
         if self.engine.thread and self.engine.thread.is_alive():
@@ -763,8 +865,7 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
             self.set_status("Stopped")
             return True
 
-        evdev = self._gdk_keycode_to_evdev(keycode)
-        evdev = max(1, min(400, evdev))
+        evdev = max(1, min(400, self._gdk_keycode_to_evdev(keycode)))
         name = _friendly_key_name(keyval)
 
         chk, spin, label, _cap = self.key_widgets[self.capture_target]
@@ -777,11 +878,10 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         self._set_capture_ui(False, None)
 
         self.pull_ui_to_config()
-        save_json(CONFIG_PATH, self.config)
+        save_json(self.config_path, self.config)
         self.set_status("Stopped")
         return True
 
-    # ---- UI <-> config ----
     def push_config_to_ui(self):
         for k, (chk, spin, label, _cap) in self.key_widgets.items():
             chk.set_active(bool(self.config["keys"][k]["enabled"]))
@@ -846,12 +946,13 @@ class RUNKMaxApp(Gtk.Application):
 
 
 def main():
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not CONFIG_PATH.exists():
-        save_json(CONFIG_PATH, DEFAULT_CONFIG)
+    handled, gtk_argv = handle_cli_reset_if_requested(sys.argv)
+    if handled:
+        raise SystemExit(0)
 
+    ensure_default_presets_exist()
     app = RUNKMaxApp()
-    raise SystemExit(app.run(None))
+    raise SystemExit(app.run(gtk_argv))
 
 
 if __name__ == "__main__":
