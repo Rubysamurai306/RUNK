@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
+"""
+RUNK-MAX (Wayland-oriented)
+
+Keycode capture notes:
+- GDK hardware_keycode is typically an XKB keycode (evdev + 8).
+- ydotool expects evdev codes (e.g., KEY_W=17), so we store (hardware_keycode - 8).
+"""
 import json
 import os
 import random
+import re
 import subprocess
 import threading
 import time
@@ -10,7 +18,8 @@ from pathlib import Path
 import gi
 
 gi.require_version("Gtk", "4.0")
-from gi.repository import GLib, Gtk  # noqa: E402
+gi.require_version("Gdk", "4.0")
+from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
 APP_ID = "com.rafael.runkmax"
 
@@ -20,10 +29,10 @@ PRESETS_DIR = SCRIPT_DIR / "presets"
 
 DEFAULT_CONFIG = {
     "keys": {
-        "W": {"code": 17, "enabled": True},
-        "A": {"code": 30, "enabled": True},
-        "S": {"code": 31, "enabled": True},
-        "D": {"code": 32, "enabled": True},
+        "W": {"code": 17, "enabled": True, "label": "W"},
+        "A": {"code": 30, "enabled": True, "label": "A"},
+        "S": {"code": 31, "enabled": True, "label": "S"},
+        "D": {"code": 32, "enabled": True, "label": "D"},
     },
     "enable_diagonals": True,
     "min_delay": 0.25,
@@ -65,12 +74,6 @@ def save_json(path: Path, data: dict) -> None:
 
 
 def normalize_config(cfg: dict, fallback: dict) -> dict:
-    """
-    Normalize config:
-    - deep-copy defaults to avoid shared nested dict references
-    - merge user cfg on top
-    - coerce types and clamp ranges
-    """
     merged = _deepcopy_jsonish(fallback)
     for k, v in cfg.items():
         merged[k] = v
@@ -82,6 +85,7 @@ def normalize_config(cfg: dict, fallback: dict) -> dict:
             merged["keys"][k] = _deepcopy_jsonish(fallback["keys"][k])
         merged["keys"][k].setdefault("code", fallback["keys"][k]["code"])
         merged["keys"][k].setdefault("enabled", fallback["keys"][k]["enabled"])
+        merged["keys"][k].setdefault("label", fallback["keys"][k].get("label", k))
 
     def b(x, default=False):
         return bool(x) if isinstance(x, (bool, int)) else default
@@ -98,6 +102,9 @@ def normalize_config(cfg: dict, fallback: dict) -> dict:
         except Exception:
             return default
 
+    def s(x, default=""):
+        return str(x) if isinstance(x, (str, int, float, bool)) else default
+
     merged["enable_diagonals"] = b(merged.get("enable_diagonals", True), True)
     merged["min_delay"] = f(merged.get("min_delay", 0.25), 0.25)
     merged["max_delay"] = f(merged.get("max_delay", 0.90), 0.90)
@@ -112,8 +119,11 @@ def normalize_config(cfg: dict, fallback: dict) -> dict:
 
     for k in ("W", "A", "S", "D"):
         merged["keys"][k]["enabled"] = b(merged["keys"][k].get("enabled", True), True)
-        merged["keys"][k]["code"] = i(merged["keys"][k].get("code", fallback["keys"][k]["code"]),
-                                      fallback["keys"][k]["code"])
+        merged["keys"][k]["code"] = i(
+            merged["keys"][k].get("code", fallback["keys"][k]["code"]),
+            fallback["keys"][k]["code"],
+        )
+        merged["keys"][k]["label"] = s(merged["keys"][k].get("label", k), k)
 
     if merged["max_delay"] < merged["min_delay"]:
         merged["max_delay"] = merged["min_delay"]
@@ -126,6 +136,25 @@ def normalize_config(cfg: dict, fallback: dict) -> dict:
     merged["double_tap_chance"] = max(2, merged["double_tap_chance"])
 
     return merged
+
+
+def _friendly_key_name(keyval: int) -> str:
+    name = Gdk.keyval_name(keyval) or ""
+    if not name:
+        return "Unknown"
+    if len(name) == 1:
+        return name.upper()
+    return name.replace("_", " ").title()
+
+
+def _sanitize_preset_name(name: str) -> str:
+    name = name.strip()
+    name = re.sub(r"\s+", " ", name)
+    if not name:
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9 _\-\.\(\)]+", name):
+        return ""
+    return name
 
 
 class EngineThread:
@@ -198,11 +227,19 @@ class EngineThread:
             env["YDOTOOL_SOCKET"] = self.socket_path
 
         def press_key(code: int):
-            subprocess.run(["ydotool", "key", f"{code}:1"], env=env,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(
+                ["ydotool", "key", f"{code}:1"],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             time.sleep(random.uniform(press_min, press_max))
-            subprocess.run(["ydotool", "key", f"{code}:0"], env=env,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(
+                ["ydotool", "key", f"{code}:0"],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
 
         def maybe_double(code: int):
             press_key(code)
@@ -322,10 +359,90 @@ class EngineThread:
             self.started_ydotoold = False
 
 
+class PresetSaveWindow(Gtk.Window):
+    def __init__(self, parent: Gtk.Window, on_save):
+        super().__init__(title="Save Preset", transient_for=parent, modal=True)
+        self.set_default_size(360, 120)
+        self._on_save = on_save
+
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        root.set_margin_top(12)
+        root.set_margin_bottom(12)
+        root.set_margin_start(12)
+        root.set_margin_end(12)
+        self.set_child(root)
+
+        root.append(Gtk.Label(label="Preset name:", xalign=0.0))
+
+        self.entry = Gtk.Entry()
+        self.entry.set_placeholder_text("e.g. MyPreset")
+        self.entry.connect("activate", self.on_ok)
+        root.append(self.entry)
+
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        btn_row.set_halign(Gtk.Align.END)
+
+        cancel = Gtk.Button(label="Cancel")
+        cancel.connect("clicked", self.on_cancel)
+        btn_row.append(cancel)
+
+        ok = Gtk.Button(label="Save")
+        ok.connect("clicked", self.on_ok)
+        btn_row.append(ok)
+
+        root.append(btn_row)
+
+    def on_cancel(self, *_):
+        self.close()
+
+    def on_ok(self, *_):
+        name = _sanitize_preset_name(self.entry.get_text())
+        self._on_save(name)
+        self.close()
+
+
+class ConfirmOverwriteWindow(Gtk.Window):
+    def __init__(self, parent: Gtk.Window, preset_name: str, on_choice):
+        super().__init__(title="Overwrite Preset?", transient_for=parent, modal=True)
+        self.set_default_size(420, 140)
+        self._on_choice = on_choice
+
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        root.set_margin_top(12)
+        root.set_margin_bottom(12)
+        root.set_margin_start(12)
+        root.set_margin_end(12)
+        self.set_child(root)
+
+        root.append(Gtk.Label(label=f'"{preset_name}" already exists.', xalign=0.0))
+        root.append(Gtk.Label(label="Overwrite it?", xalign=0.0))
+
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        btn_row.set_halign(Gtk.Align.END)
+
+        cancel = Gtk.Button(label="Cancel")
+        cancel.connect("clicked", self.on_cancel)
+        btn_row.append(cancel)
+
+        overwrite = Gtk.Button(label="Overwrite")
+        overwrite.connect("clicked", self.on_overwrite)
+        btn_row.append(overwrite)
+
+        root.append(btn_row)
+
+    def on_cancel(self, *_):
+        self._on_choice(False)
+        self.close()
+
+    def on_overwrite(self, *_):
+        self._on_choice(True)
+        self.close()
+
+
 class RUNKMaxWindow(Gtk.ApplicationWindow):
     def __init__(self, app: Gtk.Application):
         super().__init__(application=app, title="RUNK-MAX")
-        self.set_default_size(640, 590)
+        self.set_default_size(740, 630)
 
         self.config = load_json(CONFIG_PATH, DEFAULT_CONFIG)
         save_json(CONFIG_PATH, self.config)
@@ -333,7 +450,7 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         self.engine = EngineThread()
 
         self.capture_target: str | None = None
-        self._session_type = (os.environ.get("XDG_SESSION_TYPE") or "").lower()
+        self._capturing_btn: Gtk.Button | None = None
 
         self._key_controller = Gtk.EventControllerKey()
         self._key_controller.connect("key-pressed", self.on_key_pressed)
@@ -369,16 +486,21 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         presets_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         presets_row.append(Gtk.Label(label="Preset:", xalign=0.0))
 
-        self.preset_combo = Gtk.DropDown.new_from_strings(self.list_presets())
+        self.preset_combo = Gtk.DropDown.new_from_strings([])
+        self.refresh_presets_dropdown(select_name=None)
         presets_row.append(self.preset_combo)
 
         load_btn = Gtk.Button(label="Load preset")
         load_btn.connect("clicked", self.on_load_preset)
         presets_row.append(load_btn)
 
+        save_btn = Gtk.Button(label="Save preset")
+        save_btn.connect("clicked", self.on_save_preset_clicked)
+        presets_row.append(save_btn)
+
         root.append(presets_row)
 
-        frame_keys = Gtk.Frame(label="Keys (enable/disable + keycode)")
+        frame_keys = Gtk.Frame(label="Keys (enable/disable + keycode + capture)")
         root.append(frame_keys)
         key_grid = Gtk.Grid(column_spacing=10, row_spacing=6)
         key_grid.set_margin_top(8)
@@ -387,14 +509,17 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         key_grid.set_margin_end(8)
         frame_keys.set_child(key_grid)
 
-        self.key_widgets: dict[str, tuple[Gtk.CheckButton, Gtk.SpinButton, Gtk.Button]] = {}
+        self.key_widgets: dict[str, tuple[Gtk.CheckButton, Gtk.SpinButton, Gtk.Label, Gtk.Button]] = {}
         row = 0
         for name in ("W", "A", "S", "D"):
             chk = Gtk.CheckButton(label=f"{name} enabled")
             chk.connect("toggled", self.on_any_change)
 
-            code = Gtk.SpinButton.new_with_range(1, 300, 1)
+            code = Gtk.SpinButton.new_with_range(1, 400, 1)
             code.connect("value-changed", self.on_any_change)
+
+            label = Gtk.Label(label=f"Key: {self.config['keys'][name].get('label', name)}")
+            label.set_xalign(0.0)
 
             cap = Gtk.Button(label="Capture")
             cap.connect("clicked", self.on_capture_clicked, name)
@@ -402,9 +527,10 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
             key_grid.attach(chk, 0, row, 1, 1)
             key_grid.attach(Gtk.Label(label="code:", xalign=1.0), 1, row, 1, 1)
             key_grid.attach(code, 2, row, 1, 1)
-            key_grid.attach(cap, 3, row, 1, 1)
+            key_grid.attach(label, 3, row, 1, 1)
+            key_grid.attach(cap, 4, row, 1, 1)
 
-            self.key_widgets[name] = (chk, code, cap)
+            self.key_widgets[name] = (chk, code, label, cap)
             row += 1
 
         frame_opts = Gtk.Frame(label="Behavior")
@@ -482,11 +608,22 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         self.push_config_to_ui()
         self.connect("close-request", self.on_close)
 
+    # ---- presets ----
     def list_presets(self) -> list[str]:
         if not PRESETS_DIR.exists():
             return ["(none)"]
         names = sorted([p.name for p in PRESETS_DIR.glob("*.json")])
         return names if names else ["(none)"]
+
+    def refresh_presets_dropdown(self, select_name: str | None):
+        names = self.list_presets()
+        model = Gtk.StringList.new(names)
+        self.preset_combo.set_model(model)
+
+        if select_name and select_name in names:
+            self.preset_combo.set_selected(names.index(select_name))
+        else:
+            self.preset_combo.set_selected(0)
 
     def on_load_preset(self, *_):
         if self.engine.thread and self.engine.thread.is_alive():
@@ -510,6 +647,45 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         save_json(CONFIG_PATH, self.config)
         self.set_status(f"Loaded preset: {preset_path.name}")
 
+    def on_save_preset_clicked(self, *_):
+        if self.engine.thread and self.engine.thread.is_alive():
+            self.set_status("Stop engine before saving preset")
+            return
+        if self.capture_target:
+            self.set_status("Finish capture before saving preset")
+            return
+
+        def do_save(name: str):
+            if not name:
+                self.set_status("Preset save canceled/invalid name")
+                return
+
+            PRESETS_DIR.mkdir(parents=True, exist_ok=True)
+            filename = f"{name}.json" if not name.lower().endswith(".json") else name
+            preset_path = PRESETS_DIR / filename
+
+            def write_preset():
+                self.pull_ui_to_config()
+                preset_cfg = normalize_config(self.config, DEFAULT_CONFIG)
+                save_json(preset_path, preset_cfg)
+                self.refresh_presets_dropdown(select_name=preset_path.name)
+                self.set_status(f"Saved preset: {preset_path.name}")
+
+            if preset_path.exists():
+                def on_choice(overwrite: bool):
+                    if overwrite:
+                        write_preset()
+                    else:
+                        self.set_status("Preset save canceled")
+
+                ConfirmOverwriteWindow(self, preset_path.name, on_choice).present()
+                return
+
+            write_preset()
+
+        PresetSaveWindow(self, do_save).present()
+
+    # ---- lifecycle ----
     def on_close(self, *_):
         self.engine.stop()
         return False
@@ -517,12 +693,16 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
     def set_status(self, text: str):
         self.status_label.set_label(f"Status: {text}")
         running = (text == "Running" or text == "Paused")
-        self.start_btn.set_sensitive(not running)
+        self.start_btn.set_sensitive(not running and not self.capture_target)
         self.pause_btn.set_sensitive(running)
         self.stop_btn.set_sensitive(running)
         return False
 
+    # ---- controls ----
     def on_start(self, *_):
+        if self.capture_target:
+            self.set_status("Finish capture first")
+            return
         self.pull_ui_to_config()
         save_json(CONFIG_PATH, self.config)
         self.engine.start(self.config, self.set_status)
@@ -538,39 +718,75 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         self.pull_ui_to_config()
         save_json(CONFIG_PATH, self.config)
 
+    # ---- capture ----
+    def _set_capture_ui(self, capturing: bool, target_key: str | None):
+        for k, (_chk, _spin, _label, cap_btn) in self.key_widgets.items():
+            cap_btn.set_sensitive(not capturing)
+            cap_btn.set_label("Capture")
+
+        if capturing and target_key:
+            _chk, _spin, _label, btn = self.key_widgets[target_key]
+            btn.set_sensitive(True)
+            btn.set_label("Waiting… (Esc cancels)")
+            self._capturing_btn = btn
+        else:
+            self._capturing_btn = None
+
+        self.start_btn.set_sensitive(not capturing and not (self.engine.thread and self.engine.thread.is_alive()))
+
     def on_capture_clicked(self, _btn: Gtk.Button, key_name: str):
         if self.engine.thread and self.engine.thread.is_alive():
             self.set_status("Stop engine before capture")
             return
+
+        if self.capture_target == key_name:
+            self.capture_target = None
+            self._set_capture_ui(False, None)
+            self.set_status("Stopped")
+            return
+
         self.capture_target = key_name
+        self._set_capture_ui(True, key_name)
         self.set_status(f"Capture: press a key for {key_name}")
 
-    def _gtk_keycode_to_evdev(self, keycode: int) -> int:
-        if self._session_type == "x11":
-            return max(1, keycode - 8)
-        return max(1, keycode)
+    @staticmethod
+    def _gdk_keycode_to_evdev(hardware_keycode: int) -> int:
+        return max(1, int(hardware_keycode) - 8)
 
-    def on_key_pressed(self, _controller, _keyval: int, keycode: int, _state) -> bool:
+    def on_key_pressed(self, _controller, keyval: int, keycode: int, _state) -> bool:
         if not self.capture_target:
             return False
 
-        evdev = self._gtk_keycode_to_evdev(int(keycode))
-        evdev = max(1, min(300, evdev))
+        if keyval == Gdk.KEY_Escape:
+            self.capture_target = None
+            self._set_capture_ui(False, None)
+            self.set_status("Stopped")
+            return True
 
-        chk, spin, _cap = self.key_widgets[self.capture_target]
+        evdev = self._gdk_keycode_to_evdev(keycode)
+        evdev = max(1, min(400, evdev))
+        name = _friendly_key_name(keyval)
+
+        chk, spin, label, _cap = self.key_widgets[self.capture_target]
         chk.set_active(True)
         spin.set_value(evdev)
+        label.set_label(f"Key: {name}")
+        self.config["keys"][self.capture_target]["label"] = name
 
         self.capture_target = None
+        self._set_capture_ui(False, None)
+
         self.pull_ui_to_config()
         save_json(CONFIG_PATH, self.config)
         self.set_status("Stopped")
         return True
 
+    # ---- UI <-> config ----
     def push_config_to_ui(self):
-        for k, (chk, spin, _cap) in self.key_widgets.items():
+        for k, (chk, spin, label, _cap) in self.key_widgets.items():
             chk.set_active(bool(self.config["keys"][k]["enabled"]))
             spin.set_value(int(self.config["keys"][k]["code"]))
+            label.set_label(f"Key: {self.config['keys'][k].get('label', k)}")
 
         self.diag_check.set_active(bool(self.config.get("enable_diagonals", True)))
         self.min_delay.set_value(float(self.config.get("min_delay", 0.25)))
@@ -587,9 +803,12 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         self.double_chance.set_value(int(self.config.get("double_tap_chance", 8)))
 
     def pull_ui_to_config(self):
-        for k, (chk, spin, _cap) in self.key_widgets.items():
+        for k, (chk, spin, label, _cap) in self.key_widgets.items():
             self.config["keys"][k]["enabled"] = bool(chk.get_active())
             self.config["keys"][k]["code"] = int(spin.get_value())
+            lbl = label.get_text().replace("Key:", "").strip()
+            if lbl:
+                self.config["keys"][k]["label"] = lbl
 
         self.config["enable_diagonals"] = bool(self.diag_check.get_active())
 
