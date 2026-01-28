@@ -1,0 +1,19 @@
+{
+  "keys": {
+    "W": { "code": 17, "enabled": true },
+    "A": { "code": 30, "enabled": true },
+    "S": { "code": 31, "enabled": true },
+    "D": { "code": 32, "enabled": true }
+  },
+  "enable_diagonals": true,
+  "min_delay": 0.25,
+  "max_delay": 0.9,
+  "press_min": 0.06,
+  "press_max": 0.2,
+  "idle_enabled": true,
+  "idle_chance": 10,
+  "idle_min": 1.0,
+  "idle_max": 3.5,
+  "double_tap_enabled": true,
+  "double_tap_chance": 8
+}
