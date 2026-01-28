@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-import os
 import json
+import os
 import random
-import time
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import gi
+
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, GLib
+from gi.repository import GLib, Gtk  # noqa: E402
 
 APP_ID = "com.rafael.runkmax"
 
@@ -30,12 +31,16 @@ DEFAULT_CONFIG = {
     "press_min": 0.06,
     "press_max": 0.20,
     "idle_enabled": True,
-    "idle_chance": 10,     # 1 in N loops
+    "idle_chance": 10,  # 1 in N loops
     "idle_min": 1.0,
     "idle_max": 3.5,
     "double_tap_enabled": True,
-    "double_tap_chance": 8 # 1 in N presses
+    "double_tap_chance": 8,  # 1 in N presses
 }
+
+
+def _deepcopy_jsonish(obj):
+    return json.loads(json.dumps(obj))
 
 
 def load_json(path: Path, fallback: dict) -> dict:
@@ -48,7 +53,7 @@ def load_json(path: Path, fallback: dict) -> dict:
         pass
     except Exception:
         pass
-    return fallback.copy()
+    return _deepcopy_jsonish(fallback)
 
 
 def save_json(path: Path, data: dict) -> None:
@@ -61,19 +66,23 @@ def save_json(path: Path, data: dict) -> None:
 
 def normalize_config(cfg: dict, fallback: dict) -> dict:
     """
-    Make sure nested keys exist and types are sane enough for the UI.
-    Shallow-merge with defaults, then fix nested structure for keys.
+    Normalize config:
+    - deep-copy defaults to avoid shared nested dict references
+    - merge user cfg on top
+    - coerce types and clamp ranges
     """
-    merged = fallback.copy()
-    merged.update(cfg)
+    merged = _deepcopy_jsonish(fallback)
+    for k, v in cfg.items():
+        merged[k] = v
 
-    merged.setdefault("keys", fallback["keys"])
+    merged.setdefault("keys", _deepcopy_jsonish(fallback["keys"]))
+
     for k in ("W", "A", "S", "D"):
-        merged["keys"].setdefault(k, fallback["keys"][k])
+        if k not in merged["keys"] or not isinstance(merged["keys"][k], dict):
+            merged["keys"][k] = _deepcopy_jsonish(fallback["keys"][k])
         merged["keys"][k].setdefault("code", fallback["keys"][k]["code"])
         merged["keys"][k].setdefault("enabled", fallback["keys"][k]["enabled"])
 
-    # Coerce obvious scalar types (best-effort)
     def b(x, default=False):
         return bool(x) if isinstance(x, (bool, int)) else default
 
@@ -106,7 +115,6 @@ def normalize_config(cfg: dict, fallback: dict) -> dict:
         merged["keys"][k]["code"] = i(merged["keys"][k].get("code", fallback["keys"][k]["code"]),
                                       fallback["keys"][k]["code"])
 
-    # Normalize ranges
     if merged["max_delay"] < merged["min_delay"]:
         merged["max_delay"] = merged["min_delay"]
     if merged["press_max"] < merged["press_min"]:
@@ -114,7 +122,6 @@ def normalize_config(cfg: dict, fallback: dict) -> dict:
     if merged["idle_max"] < merged["idle_min"]:
         merged["idle_max"] = merged["idle_min"]
 
-    # Clamp some values to sensible ranges to avoid weird UI states
     merged["idle_chance"] = max(2, merged["idle_chance"])
     merged["double_tap_chance"] = max(2, merged["double_tap_chance"])
 
@@ -122,22 +129,15 @@ def normalize_config(cfg: dict, fallback: dict) -> dict:
 
 
 class EngineThread:
-    """
-    Self-contained engine:
-    - starts ydotoold on Start (user-mode) on a RUNK-specific socket
-    - injects key events via ydotool
-    - supports pause/resume + stop
-    - uses config with per-key enable/disable
-    """
     def __init__(self):
         self._stop = threading.Event()
         self._pause = threading.Event()
-        self._pause.clear()
         self.thread: threading.Thread | None = None
 
         self.ydotoold_proc: subprocess.Popen | None = None
         self.socket_path: str | None = None
-        self.started_ydotoold: bool = False  # track ownership so we don't break other tools
+        self.started_ydotoold: bool = False
+        self._ydotool_lock = threading.Lock()
 
     def start(self, config: dict, on_status):
         if self.thread and self.thread.is_alive():
@@ -172,7 +172,6 @@ class EngineThread:
 
         vert = [config["keys"][k]["code"] for k in ("W", "S") if config["keys"][k]["enabled"]]
         horiz = [config["keys"][k]["code"] for k in ("A", "D") if config["keys"][k]["enabled"]]
-
         enable_diag = bool(config.get("enable_diagonals", True)) and (len(vert) > 0 and len(horiz) > 0)
 
         if not self._ensure_ydotoold():
@@ -189,7 +188,7 @@ class EngineThread:
         idle_enabled = bool(config.get("idle_enabled", True))
         idle_chance = int(config.get("idle_chance", 10))
         idle_min = float(config.get("idle_min", 1.0))
-        idle_max = float(config.get("idle_max", 3.5))  # keep consistent with defaults
+        idle_max = float(config.get("idle_max", 3.5))
 
         double_enabled = bool(config.get("double_tap_enabled", True))
         double_chance = int(config.get("double_tap_chance", 8))
@@ -211,26 +210,28 @@ class EngineThread:
                 time.sleep(random.uniform(0.03, 0.12))
                 press_key(code)
 
+        paused_reported = False
+
         while not self._stop.is_set():
             while self._pause.is_set() and not self._stop.is_set():
-                status("Paused")
+                if not paused_reported:
+                    status("Paused")
+                    paused_reported = True
                 time.sleep(0.15)
 
             if self._stop.is_set():
                 break
 
+            paused_reported = False
             status("Running")
 
             if idle_enabled and random.randint(1, max(2, idle_chance)) == 1:
                 time.sleep(random.uniform(idle_min, idle_max))
 
             move_type = random.choice(["axis", "diag"]) if enable_diag else "axis"
-            keys: list[int]
 
             if move_type == "diag":
-                k1 = random.choice(vert)
-                k2 = random.choice(horiz)
-                keys = [k1, k2]
+                keys = [random.choice(vert), random.choice(horiz)]
             else:
                 if vert and horiz:
                     axis = random.choice(["vert", "horiz"])
@@ -255,7 +256,6 @@ class EngineThread:
 
             for code in keys:
                 maybe_double(code)
-
             for code in reversed(keys):
                 maybe_double(code)
 
@@ -265,58 +265,17 @@ class EngineThread:
         self._stop_ydotoold()
 
     def _ensure_ydotoold(self) -> bool:
-        """
-        Always start our own ydotoold instance on a RUNK-specific socket.
-        This avoids conflicts with other tools and ensures our ydotool calls work.
-        """
-        xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
-        if xdg_runtime:
-            self.socket_path = os.path.join(xdg_runtime, "ydotool-runk.sock")
-        else:
-            self.socket_path = str(Path.home() / ".ydotool_runk_socket")
+        with self._ydotool_lock:
+            xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
+            pid = os.getpid()
+            if xdg_runtime:
+                self.socket_path = os.path.join(xdg_runtime, f"ydotool-runk-{pid}.sock")
+            else:
+                self.socket_path = str(Path.home() / f".ydotool_runk_socket_{pid}")
 
-        env = os.environ.copy()
-        env["YDOTOOL_SOCKET"] = self.socket_path
+            env = os.environ.copy()
+            env["YDOTOOL_SOCKET"] = self.socket_path
 
-        # Clean stale socket from previous crashes (ours)
-        try:
-            os.remove(self.socket_path)
-        except FileNotFoundError:
-            pass
-        except Exception:
-            # If we can't remove it, starting may fail anyway; still attempt.
-            pass
-
-        try:
-            uid = os.getuid()
-            gid = os.getgid()
-            self.ydotoold_proc = subprocess.Popen(
-                ["ydotoold", f"--socket-path={self.socket_path}", f"--socket-own={uid}:{gid}"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=env
-            )
-            self.started_ydotoold = True
-            time.sleep(0.25)
-            return True
-        except FileNotFoundError:
-            return False
-        except Exception:
-            return False
-
-    def _stop_ydotoold(self):
-        # Only terminate if we started it
-        if self.ydotoold_proc and self.ydotoold_proc.poll() is None:
-            self.ydotoold_proc.terminate()
-            try:
-                self.ydotoold_proc.wait(timeout=1.0)
-            except subprocess.TimeoutExpired:
-                self.ydotoold_proc.kill()
-
-        self.ydotoold_proc = None
-
-        # Only remove socket if it was ours
-        if self.started_ydotoold and self.socket_path:
             try:
                 os.remove(self.socket_path)
             except FileNotFoundError:
@@ -324,18 +283,61 @@ class EngineThread:
             except Exception:
                 pass
 
-        self.started_ydotoold = False
+            try:
+                uid = os.getuid()
+                gid = os.getgid()
+                self.ydotoold_proc = subprocess.Popen(
+                    ["ydotoold", f"--socket-path={self.socket_path}", f"--socket-own={uid}:{gid}"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=env,
+                )
+                self.started_ydotoold = True
+                time.sleep(0.25)
+                return True
+            except FileNotFoundError:
+                return False
+            except Exception:
+                return False
+
+    def _stop_ydotoold(self):
+        with self._ydotool_lock:
+            if self.ydotoold_proc and self.ydotoold_proc.poll() is None:
+                self.ydotoold_proc.terminate()
+                try:
+                    self.ydotoold_proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    self.ydotoold_proc.kill()
+
+            self.ydotoold_proc = None
+
+            if self.started_ydotoold and self.socket_path:
+                try:
+                    os.remove(self.socket_path)
+                except FileNotFoundError:
+                    pass
+                except Exception:
+                    pass
+
+            self.started_ydotoold = False
 
 
 class RUNKMaxWindow(Gtk.ApplicationWindow):
     def __init__(self, app: Gtk.Application):
         super().__init__(application=app, title="RUNK-MAX")
-        self.set_default_size(600, 560)
+        self.set_default_size(640, 590)
 
         self.config = load_json(CONFIG_PATH, DEFAULT_CONFIG)
         save_json(CONFIG_PATH, self.config)
 
         self.engine = EngineThread()
+
+        self.capture_target: str | None = None
+        self._session_type = (os.environ.get("XDG_SESSION_TYPE") or "").lower()
+
+        self._key_controller = Gtk.EventControllerKey()
+        self._key_controller.connect("key-pressed", self.on_key_pressed)
+        self.add_controller(self._key_controller)
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         root.set_margin_top(12)
@@ -344,12 +346,10 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         root.set_margin_end(12)
         self.set_child(root)
 
-        # Status
         self.status_label = Gtk.Label(label="Status: Stopped")
         self.status_label.set_xalign(0.0)
         root.append(self.status_label)
 
-        # Controls
         controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         self.start_btn = Gtk.Button(label="Start")
         self.start_btn.connect("clicked", self.on_start)
@@ -364,15 +364,12 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         self.stop_btn.set_sensitive(False)
         self.stop_btn.connect("clicked", self.on_stop)
         controls.append(self.stop_btn)
-
         root.append(controls)
 
-        # Presets row
         presets_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         presets_row.append(Gtk.Label(label="Preset:", xalign=0.0))
 
-        self.preset_names = self.list_presets()
-        self.preset_combo = Gtk.DropDown.new_from_strings(self.preset_names)
+        self.preset_combo = Gtk.DropDown.new_from_strings(self.list_presets())
         presets_row.append(self.preset_combo)
 
         load_btn = Gtk.Button(label="Load preset")
@@ -381,7 +378,6 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
 
         root.append(presets_row)
 
-        # Keys section
         frame_keys = Gtk.Frame(label="Keys (enable/disable + keycode)")
         root.append(frame_keys)
         key_grid = Gtk.Grid(column_spacing=10, row_spacing=6)
@@ -391,22 +387,26 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         key_grid.set_margin_end(8)
         frame_keys.set_child(key_grid)
 
-        self.key_widgets = {}
+        self.key_widgets: dict[str, tuple[Gtk.CheckButton, Gtk.SpinButton, Gtk.Button]] = {}
         row = 0
         for name in ("W", "A", "S", "D"):
             chk = Gtk.CheckButton(label=f"{name} enabled")
             chk.connect("toggled", self.on_any_change)
+
             code = Gtk.SpinButton.new_with_range(1, 300, 1)
             code.connect("value-changed", self.on_any_change)
+
+            cap = Gtk.Button(label="Capture")
+            cap.connect("clicked", self.on_capture_clicked, name)
 
             key_grid.attach(chk, 0, row, 1, 1)
             key_grid.attach(Gtk.Label(label="code:", xalign=1.0), 1, row, 1, 1)
             key_grid.attach(code, 2, row, 1, 1)
+            key_grid.attach(cap, 3, row, 1, 1)
 
-            self.key_widgets[name] = (chk, code)
+            self.key_widgets[name] = (chk, code, cap)
             row += 1
 
-        # Options section
         frame_opts = Gtk.Frame(label="Behavior")
         root.append(frame_opts)
         grid = Gtk.Grid(column_spacing=10, row_spacing=8)
@@ -478,13 +478,10 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         self.double_chance = Gtk.SpinButton.new_with_range(2, 200, 1)
         self.double_chance.connect("value-changed", self.on_any_change)
         grid.attach(self.double_chance, 1, r, 1, 1)
-        r += 1
 
         self.push_config_to_ui()
-
         self.connect("close-request", self.on_close)
 
-    # ----- Presets -----
     def list_presets(self) -> list[str]:
         if not PRESETS_DIR.exists():
             return ["(none)"]
@@ -506,18 +503,13 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
             return
 
         preset_path = PRESETS_DIR / names[idx]
-        try:
-            preset_cfg = load_json(preset_path, DEFAULT_CONFIG)
-        except Exception as e:
-            self.set_status(f"Preset load failed: {e}")
-            return
+        preset_cfg = load_json(preset_path, DEFAULT_CONFIG)
 
         self.config = normalize_config(preset_cfg, DEFAULT_CONFIG)
         self.push_config_to_ui()
         save_json(CONFIG_PATH, self.config)
         self.set_status(f"Loaded preset: {preset_path.name}")
 
-    # ----- lifecycle -----
     def on_close(self, *_):
         self.engine.stop()
         return False
@@ -530,7 +522,6 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         self.stop_btn.set_sensitive(running)
         return False
 
-    # ----- controls -----
     def on_start(self, *_):
         self.pull_ui_to_config()
         save_json(CONFIG_PATH, self.config)
@@ -547,9 +538,37 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         self.pull_ui_to_config()
         save_json(CONFIG_PATH, self.config)
 
-    # ----- UI <-> config -----
+    def on_capture_clicked(self, _btn: Gtk.Button, key_name: str):
+        if self.engine.thread and self.engine.thread.is_alive():
+            self.set_status("Stop engine before capture")
+            return
+        self.capture_target = key_name
+        self.set_status(f"Capture: press a key for {key_name}")
+
+    def _gtk_keycode_to_evdev(self, keycode: int) -> int:
+        if self._session_type == "x11":
+            return max(1, keycode - 8)
+        return max(1, keycode)
+
+    def on_key_pressed(self, _controller, _keyval: int, keycode: int, _state) -> bool:
+        if not self.capture_target:
+            return False
+
+        evdev = self._gtk_keycode_to_evdev(int(keycode))
+        evdev = max(1, min(300, evdev))
+
+        chk, spin, _cap = self.key_widgets[self.capture_target]
+        chk.set_active(True)
+        spin.set_value(evdev)
+
+        self.capture_target = None
+        self.pull_ui_to_config()
+        save_json(CONFIG_PATH, self.config)
+        self.set_status("Stopped")
+        return True
+
     def push_config_to_ui(self):
-        for k, (chk, spin) in self.key_widgets.items():
+        for k, (chk, spin, _cap) in self.key_widgets.items():
             chk.set_active(bool(self.config["keys"][k]["enabled"]))
             spin.set_value(int(self.config["keys"][k]["code"]))
 
@@ -568,7 +587,7 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         self.double_chance.set_value(int(self.config.get("double_tap_chance", 8)))
 
     def pull_ui_to_config(self):
-        for k, (chk, spin) in self.key_widgets.items():
+        for k, (chk, spin, _cap) in self.key_widgets.items():
             self.config["keys"][k]["enabled"] = bool(chk.get_active())
             self.config["keys"][k]["code"] = int(spin.get_value())
 
