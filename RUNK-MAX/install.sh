@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# FILE: RUNK-MAX/install.sh
 set -euo pipefail
 
 log()  { printf "[RUNK] %s\n" "$*"; }
@@ -10,16 +11,14 @@ TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
 [[ -n "$TARGET_HOME" && -d "$TARGET_HOME" ]] || die "Could not determine home for user: $TARGET_USER"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MAX_DIR="$SCRIPT_DIR"                       # RUNK-MAX directory
+MAX_DIR="$SCRIPT_DIR"
 ROOT_DIR="$(cd "$MAX_DIR/.." && pwd)"
-MINIMAL_DIR="$ROOT_DIR/RUNK-minimal"        # optional sibling
+MINIMAL_DIR="$ROOT_DIR/RUNK-minimal"
 
-DESKTOP_IN="$MAX_DIR/runk.desktop.in"        # optional template
+DESKTOP_IN="$MAX_DIR/runk.desktop.in"
 
 # Validate expected files in RUNK-MAX/
 [[ -f "$MAX_DIR/runk-max.py" ]] || die "Missing: $MAX_DIR/runk-max.py"
-[[ -f "$MAX_DIR/config/current.json" ]] || warn "Missing: $MAX_DIR/config/current.json (GUI will create it)."
-[[ -d "$MAX_DIR/presets" ]] || warn "Missing: $MAX_DIR/presets (preset dropdown will be empty)."
 [[ -d "$MINIMAL_DIR" ]] || warn "Missing: $MINIMAL_DIR (ok; MAX is standalone)."
 
 need_root() {
@@ -30,6 +29,11 @@ need_root() {
 
 as_target_user() {
   sudo -u "$TARGET_USER" env HOME="$TARGET_HOME" bash -lc "$*"
+}
+
+user_config_dir() {
+  local xdg="${XDG_CONFIG_HOME:-$TARGET_HOME/.config}"
+  echo "$xdg/runk-max"
 }
 
 install_packages() {
@@ -103,7 +107,6 @@ EOF
 }
 
 install_icon_user_home_assets() {
-  # Canonical icon location requested: ~/assets/icon.png
   local icon_src="$MAX_DIR/assets/icon.png"
   local icon_dir="$TARGET_HOME/assets"
   local icon_dst="$icon_dir/icon.png"
@@ -121,7 +124,6 @@ install_icon_user_home_assets() {
   cp "$icon_src" "$icon_dst"
   chown "$TARGET_USER":"$TARGET_USER" "$icon_dst"
 
-  # Desktop entry needs an absolute path (no ~ expansion)
   echo "$icon_dst"
 }
 
@@ -132,7 +134,6 @@ render_desktop_from_template_or_inline() {
 
   if [[ -f "$DESKTOP_IN" ]]; then
     log "Using desktop template: $DESKTOP_IN"
-    # Escape for sed replacement.
     local esc_exec esc_icon
     esc_exec="$(printf '%s' "$exec_value" | sed -e 's/[\/&]/\\&/g')"
     esc_icon="$(printf '%s' "$icon_value" | sed -e 's/[\/&]/\\&/g')"
@@ -142,13 +143,11 @@ render_desktop_from_template_or_inline() {
       -e "s/@ICON@/$esc_icon/g" \
       "$DESKTOP_IN" > "$desktop_path"
 
-    # If the template doesn't include these, append them (idempotent-ish).
     grep -q '^StartupWMClass=' "$desktop_path" || echo 'StartupWMClass=com.rafael.runkmax' >> "$desktop_path"
     grep -q '^Keywords=' "$desktop_path"       || echo 'Keywords=keyboard;macro;ydotool;' >> "$desktop_path"
     return 0
   fi
 
-  log "No runk.desktop.in found; writing desktop entry inline."
   cat > "$desktop_path" <<EOF
 [Desktop Entry]
 Name=RUNK-MAX
@@ -177,11 +176,104 @@ install_desktop_entry_user() {
   render_desktop_from_template_or_inline "$desktop_path" "$exec_value" "$icon_value"
   chown "$TARGET_USER":"$TARGET_USER" "$desktop_path"
 
-  as_target_user "command -v update-desktop-database >/dev/null && update-desktop-database $TARGET_HOME/.local/share/applications || true"
+  as_target_user "command -v update-desktop-database >/dev/null && update-desktop-database '$TARGET_HOME/.local/share/applications' || true"
   as_target_user "command -v kbuildsycoca5 >/dev/null && kbuildsycoca5 || true"
 }
 
+install_user_presets() {
+  local cfg_dir
+  cfg_dir="$(user_config_dir)"
+  local presets_dst="$cfg_dir/presets"
+
+  log "Installing presets to: $presets_dst"
+  mkdir -p "$presets_dst"
+  chown -R "$TARGET_USER":"$TARGET_USER" "$cfg_dir"
+
+  if [[ -d "$MAX_DIR/presets" ]]; then
+    log "Copying presets from repo presets/ -> user config"
+    cp -f "$MAX_DIR"/presets/*.json "$presets_dst/" 2>/dev/null || true
+    chown -R "$TARGET_USER":"$TARGET_USER" "$presets_dst"
+  fi
+
+  # Ensure at least Default.json + Gaming.json exist.
+  if [[ ! -f "$presets_dst/Default.json" ]]; then
+    cat > "$presets_dst/Default.json" <<'EOF'
+{
+  "keys": {
+    "W": { "code": 17, "enabled": true,  "label": "W" },
+    "A": { "code": 30, "enabled": false, "label": "A" },
+    "S": { "code": 31, "enabled": false, "label": "S" },
+    "D": { "code": 32, "enabled": false, "label": "D" }
+  },
+  "enable_diagonals": false,
+  "min_delay": 0.25,
+  "max_delay": 0.9,
+  "press_min": 0.06,
+  "press_max": 0.2,
+  "idle_enabled": true,
+  "idle_chance": 10,
+  "idle_min": 1.0,
+  "idle_max": 3.5,
+  "double_tap_enabled": true,
+  "double_tap_chance": 8
+}
+EOF
+  fi
+
+  if [[ ! -f "$presets_dst/Gaming.json" ]]; then
+    cat > "$presets_dst/Gaming.json" <<'EOF'
+{
+  "keys": {
+    "W": { "code": 17, "enabled": true, "label": "W" },
+    "A": { "code": 30, "enabled": true, "label": "A" },
+    "S": { "code": 31, "enabled": true, "label": "S" },
+    "D": { "code": 32, "enabled": true, "label": "D" }
+  },
+  "enable_diagonals": true,
+  "min_delay": 0.25,
+  "max_delay": 0.9,
+  "press_min": 0.06,
+  "press_max": 0.2,
+  "idle_enabled": true,
+  "idle_chance": 10,
+  "idle_min": 1.0,
+  "idle_max": 3.5,
+  "double_tap_enabled": true,
+  "double_tap_chance": 8
+}
+EOF
+  fi
+
+  if [[ ! -f "$presets_dst/subtle.json" ]]; then
+    cat > "$presets_dst/subtle.json" <<'EOF'
+{
+  "keys": {
+    "W": { "code": 17, "enabled": true, "label": "W" },
+    "A": { "code": 30, "enabled": true, "label": "A" },
+    "S": { "code": 31, "enabled": true, "label": "S" },
+    "D": { "code": 32, "enabled": true, "label": "D" }
+  },
+  "enable_diagonals": true,
+  "min_delay": 0.8,
+  "max_delay": 1.6,
+  "press_min": 0.05,
+  "press_max": 0.12,
+  "idle_enabled": true,
+  "idle_chance": 6,
+  "idle_min": 2.0,
+  "idle_max": 5.0,
+  "double_tap_enabled": true,
+  "double_tap_chance": 20
+}
+EOF
+  fi
+
+  chown -R "$TARGET_USER":"$TARGET_USER" "$presets_dst"
+}
+
 print_post_install() {
+  local cfg_dir
+  cfg_dir="$(user_config_dir)"
   cat <<EOF
 
 [RUNK] Install complete.
@@ -193,6 +285,7 @@ Installed/configured:
 - launcher: $TARGET_HOME/.local/bin/runk-max
 - desktop entry: $TARGET_HOME/.local/share/applications/runk-max.desktop
 - icon (canonical): $TARGET_HOME/assets/icon.png (if $MAX_DIR/assets/icon.png existed)
+- presets: $cfg_dir/presets
 
 Important:
 - If the installer added $TARGET_USER to the uinput group, you MUST log out and log back in.
@@ -208,10 +301,6 @@ main() {
   log "MAX_DIR: $MAX_DIR"
   log "Target user: $TARGET_USER"
 
-  if [[ "$(id -u)" -ne 0 ]]; then
-    log "Not running as root; will prompt for sudo as needed."
-  fi
-
   sudo -v
   install_packages
 
@@ -222,6 +311,7 @@ main() {
   ensure_uinput_module_boot
 
   install_launcher_wrapper
+  install_user_presets
   install_desktop_entry_user
 
   print_post_install
