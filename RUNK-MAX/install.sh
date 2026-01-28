@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # FILE: RUNK-MAX/install.sh
+#
+# Minimal installer:
+# - NO repo presets/config needed (app auto-creates presets + current.json in ~/.config/runk-max/)
+# - installs packages (Arch), udev rule, module load, wrapper, desktop entry, and icon to ~/assets/icon.png
+#
 set -euo pipefail
 
 log()  { printf "[RUNK] %s\n" "$*"; }
@@ -12,14 +17,9 @@ TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAX_DIR="$SCRIPT_DIR"
-ROOT_DIR="$(cd "$MAX_DIR/.." && pwd)"
-MINIMAL_DIR="$ROOT_DIR/RUNK-minimal"
-
 DESKTOP_IN="$MAX_DIR/runk.desktop.in"
 
-# Validate expected files in RUNK-MAX/
 [[ -f "$MAX_DIR/runk-max.py" ]] || die "Missing: $MAX_DIR/runk-max.py"
-[[ -d "$MINIMAL_DIR" ]] || warn "Missing: $MINIMAL_DIR (ok; MAX is standalone)."
 
 need_root() {
   if [[ "$(id -u)" -ne 0 ]]; then
@@ -29,11 +29,6 @@ need_root() {
 
 as_target_user() {
   sudo -u "$TARGET_USER" env HOME="$TARGET_HOME" bash -lc "$*"
-}
-
-user_config_dir() {
-  local xdg="${XDG_CONFIG_HOME:-$TARGET_HOME/.config}"
-  echo "$xdg/runk-max"
 }
 
 install_packages() {
@@ -97,7 +92,6 @@ install_launcher_wrapper() {
   cat > "$wrapper" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-
 MAX_DIR="$MAX_DIR"
 exec python3 "\$MAX_DIR/runk-max.py"
 EOF
@@ -123,11 +117,10 @@ install_icon_user_home_assets() {
   log "Installing icon to: $icon_dst"
   cp "$icon_src" "$icon_dst"
   chown "$TARGET_USER":"$TARGET_USER" "$icon_dst"
-
   echo "$icon_dst"
 }
 
-render_desktop_from_template_or_inline() {
+render_desktop() {
   local desktop_path="$1"
   local exec_value="$2"
   local icon_value="$3"
@@ -173,107 +166,14 @@ install_desktop_entry_user() {
   log "Installing .desktop entry: $desktop_path"
   mkdir -p "$app_dir"
 
-  render_desktop_from_template_or_inline "$desktop_path" "$exec_value" "$icon_value"
+  render_desktop "$desktop_path" "$exec_value" "$icon_value"
   chown "$TARGET_USER":"$TARGET_USER" "$desktop_path"
 
   as_target_user "command -v update-desktop-database >/dev/null && update-desktop-database '$TARGET_HOME/.local/share/applications' || true"
   as_target_user "command -v kbuildsycoca5 >/dev/null && kbuildsycoca5 || true"
 }
 
-install_user_presets() {
-  local cfg_dir
-  cfg_dir="$(user_config_dir)"
-  local presets_dst="$cfg_dir/presets"
-
-  log "Installing presets to: $presets_dst"
-  mkdir -p "$presets_dst"
-  chown -R "$TARGET_USER":"$TARGET_USER" "$cfg_dir"
-
-  if [[ -d "$MAX_DIR/presets" ]]; then
-    log "Copying presets from repo presets/ -> user config"
-    cp -f "$MAX_DIR"/presets/*.json "$presets_dst/" 2>/dev/null || true
-    chown -R "$TARGET_USER":"$TARGET_USER" "$presets_dst"
-  fi
-
-  # Ensure at least Default.json + Gaming.json exist.
-  if [[ ! -f "$presets_dst/Default.json" ]]; then
-    cat > "$presets_dst/Default.json" <<'EOF'
-{
-  "keys": {
-    "W": { "code": 17, "enabled": true,  "label": "W" },
-    "A": { "code": 30, "enabled": false, "label": "A" },
-    "S": { "code": 31, "enabled": false, "label": "S" },
-    "D": { "code": 32, "enabled": false, "label": "D" }
-  },
-  "enable_diagonals": false,
-  "min_delay": 0.25,
-  "max_delay": 0.9,
-  "press_min": 0.06,
-  "press_max": 0.2,
-  "idle_enabled": true,
-  "idle_chance": 10,
-  "idle_min": 1.0,
-  "idle_max": 3.5,
-  "double_tap_enabled": true,
-  "double_tap_chance": 8
-}
-EOF
-  fi
-
-  if [[ ! -f "$presets_dst/Gaming.json" ]]; then
-    cat > "$presets_dst/Gaming.json" <<'EOF'
-{
-  "keys": {
-    "W": { "code": 17, "enabled": true, "label": "W" },
-    "A": { "code": 30, "enabled": true, "label": "A" },
-    "S": { "code": 31, "enabled": true, "label": "S" },
-    "D": { "code": 32, "enabled": true, "label": "D" }
-  },
-  "enable_diagonals": true,
-  "min_delay": 0.25,
-  "max_delay": 0.9,
-  "press_min": 0.06,
-  "press_max": 0.2,
-  "idle_enabled": true,
-  "idle_chance": 10,
-  "idle_min": 1.0,
-  "idle_max": 3.5,
-  "double_tap_enabled": true,
-  "double_tap_chance": 8
-}
-EOF
-  fi
-
-  if [[ ! -f "$presets_dst/subtle.json" ]]; then
-    cat > "$presets_dst/subtle.json" <<'EOF'
-{
-  "keys": {
-    "W": { "code": 17, "enabled": true, "label": "W" },
-    "A": { "code": 30, "enabled": true, "label": "A" },
-    "S": { "code": 31, "enabled": true, "label": "S" },
-    "D": { "code": 32, "enabled": true, "label": "D" }
-  },
-  "enable_diagonals": true,
-  "min_delay": 0.8,
-  "max_delay": 1.6,
-  "press_min": 0.05,
-  "press_max": 0.12,
-  "idle_enabled": true,
-  "idle_chance": 6,
-  "idle_min": 2.0,
-  "idle_max": 5.0,
-  "double_tap_enabled": true,
-  "double_tap_chance": 20
-}
-EOF
-  fi
-
-  chown -R "$TARGET_USER":"$TARGET_USER" "$presets_dst"
-}
-
 print_post_install() {
-  local cfg_dir
-  cfg_dir="$(user_config_dir)"
   cat <<EOF
 
 [RUNK] Install complete.
@@ -285,7 +185,11 @@ Installed/configured:
 - launcher: $TARGET_HOME/.local/bin/runk-max
 - desktop entry: $TARGET_HOME/.local/share/applications/runk-max.desktop
 - icon (canonical): $TARGET_HOME/assets/icon.png (if $MAX_DIR/assets/icon.png existed)
-- presets: $cfg_dir/presets
+
+Notes:
+- App will auto-create:
+  - ~/.config/runk-max/current.json
+  - ~/.config/runk-max/presets/{Default.json,Gaming.json,subtle.json}
 
 Important:
 - If the installer added $TARGET_USER to the uinput group, you MUST log out and log back in.
@@ -293,6 +197,7 @@ Important:
 Launch:
 - KDE launcher: search "RUNK-MAX"
 - Or run: runk-max
+- Reset config: runk-max --reset
 
 EOF
 }
@@ -311,7 +216,6 @@ main() {
   ensure_uinput_module_boot
 
   install_launcher_wrapper
-  install_user_presets
   install_desktop_entry_user
 
   print_post_install
