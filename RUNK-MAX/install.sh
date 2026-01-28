@@ -10,10 +10,11 @@ TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
 [[ -n "$TARGET_HOME" && -d "$TARGET_HOME" ]] || die "Could not determine home for user: $TARGET_USER"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MAX_DIR="$SCRIPT_DIR"
-
+MAX_DIR="$SCRIPT_DIR"                       # RUNK-MAX directory
 ROOT_DIR="$(cd "$MAX_DIR/.." && pwd)"
-MINIMAL_DIR="$ROOT_DIR/RUNK-minimal"   # matches your repo tree name
+MINIMAL_DIR="$ROOT_DIR/RUNK-minimal"        # optional sibling
+
+DESKTOP_IN="$MAX_DIR/runk.desktop.in"        # optional template
 
 # Validate expected files in RUNK-MAX/
 [[ -f "$MAX_DIR/runk-max.py" ]] || die "Missing: $MAX_DIR/runk-max.py"
@@ -101,10 +102,14 @@ EOF
   chown "$TARGET_USER":"$TARGET_USER" "$wrapper"
 }
 
-install_icon_user() {
+install_icon_user_home_assets() {
+  # Canonical icon location requested: ~/assets/icon.png
   local icon_src="$MAX_DIR/assets/icon.png"
-  local icon_dir="$TARGET_HOME/.local/share/icons/hicolor/256x256/apps"
-  local icon_dst="$icon_dir/runk-max.png"
+  local icon_dir="$TARGET_HOME/assets"
+  local icon_dst="$icon_dir/icon.png"
+
+  mkdir -p "$icon_dir"
+  chown "$TARGET_USER":"$TARGET_USER" "$icon_dir"
 
   if [[ ! -f "$icon_src" ]]; then
     warn "Icon not found at $icon_src — falling back to Icon=keyboard"
@@ -112,37 +117,67 @@ install_icon_user() {
     return 0
   fi
 
-  log "Installing icon: $icon_dst"
-  mkdir -p "$icon_dir"
+  log "Installing icon to: $icon_dst"
   cp "$icon_src" "$icon_dst"
   chown "$TARGET_USER":"$TARGET_USER" "$icon_dst"
 
+  # Desktop entry needs an absolute path (no ~ expansion)
   echo "$icon_dst"
 }
 
-install_desktop_entry_user() {
-  local app_dir="$TARGET_HOME/.local/share/applications"
-  local desktop_path="$app_dir/runk-max.desktop"
-  local icon_value
-  icon_value="$(install_icon_user)"
+render_desktop_from_template_or_inline() {
+  local desktop_path="$1"
+  local exec_value="$2"
+  local icon_value="$3"
 
-  log "Installing .desktop entry: $desktop_path"
-  mkdir -p "$app_dir"
+  if [[ -f "$DESKTOP_IN" ]]; then
+    log "Using desktop template: $DESKTOP_IN"
+    # Escape for sed replacement.
+    local esc_exec esc_icon
+    esc_exec="$(printf '%s' "$exec_value" | sed -e 's/[\/&]/\\&/g')"
+    esc_icon="$(printf '%s' "$icon_value" | sed -e 's/[\/&]/\\&/g')"
 
+    sed \
+      -e "s/@EXEC@/$esc_exec/g" \
+      -e "s/@ICON@/$esc_icon/g" \
+      "$DESKTOP_IN" > "$desktop_path"
+
+    # If the template doesn't include these, append them (idempotent-ish).
+    grep -q '^StartupWMClass=' "$desktop_path" || echo 'StartupWMClass=com.rafael.runkmax' >> "$desktop_path"
+    grep -q '^Keywords=' "$desktop_path"       || echo 'Keywords=keyboard;macro;ydotool;' >> "$desktop_path"
+    return 0
+  fi
+
+  log "No runk.desktop.in found; writing desktop entry inline."
   cat > "$desktop_path" <<EOF
 [Desktop Entry]
 Name=RUNK-MAX
 Comment=Rafael's Ultimate Ninja Keyspammer (GUI)
-Exec=$TARGET_HOME/.local/bin/runk-max
+Exec=$exec_value
 Icon=$icon_value
 Terminal=false
 Type=Application
 Categories=Utility;Game;
 StartupNotify=true
+StartupWMClass=com.rafael.runkmax
+Keywords=keyboard;macro;ydotool;
 EOF
+}
 
+install_desktop_entry_user() {
+  local app_dir="$TARGET_HOME/.local/share/applications"
+  local desktop_path="$app_dir/runk-max.desktop"
+  local exec_value="$TARGET_HOME/.local/bin/runk-max"
+  local icon_value
+  icon_value="$(install_icon_user_home_assets)"
+
+  log "Installing .desktop entry: $desktop_path"
+  mkdir -p "$app_dir"
+
+  render_desktop_from_template_or_inline "$desktop_path" "$exec_value" "$icon_value"
   chown "$TARGET_USER":"$TARGET_USER" "$desktop_path"
 
+  as_target_user "command -v update-desktop-database >/dev/null && update-desktop-database $TARGET_HOME/.local/share/applications || true"
   as_target_user "command -v kbuildsycoca5 >/dev/null && kbuildsycoca5 || true"
 }
 
@@ -157,7 +192,7 @@ Installed/configured:
 - module load: /etc/modules-load.d/uinput-runk.conf
 - launcher: $TARGET_HOME/.local/bin/runk-max
 - desktop entry: $TARGET_HOME/.local/share/applications/runk-max.desktop
-- icon: $TARGET_HOME/.local/share/icons/hicolor/256x256/apps/runk-max.png (if assets/icon.png existed)
+- icon (canonical): $TARGET_HOME/assets/icon.png (if $MAX_DIR/assets/icon.png existed)
 
 Important:
 - If the installer added $TARGET_USER to the uinput group, you MUST log out and log back in.
