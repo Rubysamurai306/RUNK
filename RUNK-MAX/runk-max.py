@@ -15,6 +15,10 @@ First run:
 
 CLI:
 - --reset  deletes current.json (next launch reseeds from Default.json)
+
+UI syncing:
+- Guard prevents programmatic UI updates (preset load) from triggering on_any_change() and
+  overwriting config with half-applied values.
 """
 from __future__ import annotations
 
@@ -240,9 +244,6 @@ def ensure_default_presets_exist() -> None:
 
 
 def handle_cli_reset_if_requested(argv: list[str]) -> tuple[bool, list[str]]:
-    """
-    Returns: (handled_and_exited, filtered_argv_for_gtk)
-    """
     flag = "--reset"
     if flag not in argv:
         return False, argv
@@ -250,10 +251,11 @@ def handle_cli_reset_if_requested(argv: list[str]) -> tuple[bool, list[str]]:
     ensure_default_presets_exist()
     cfg = get_user_config_path()
     try:
-        cfg.unlink(missing_ok=True)  # py3.8+ supports missing_ok
+        cfg.unlink(missing_ok=True)
     except TypeError:
         if cfg.exists():
             cfg.unlink()
+
     print(f"[RUNK] Reset complete: deleted {cfg}")
     filtered = [a for a in argv if a != flag]
     return True, filtered
@@ -287,7 +289,10 @@ class EngineThread:
         self._stop_ydotoold()
 
     def toggle_pause(self):
-        self._pause.set() if not self._pause.is_set() else self._pause.clear()
+        if self._pause.is_set():
+            self._pause.clear()
+        else:
+            self._pause.set()
 
     def _run(self, config: dict, on_status):
         def status(s: str):
@@ -543,21 +548,27 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         super().__init__(application=app, title="RUNK-MAX")
         self.set_default_size(760, 640)
 
+        self._syncing_ui = False
+        self.capture_target: str | None = None
+        self._capturing_btn: Gtk.Button | None = None
+
         ensure_default_presets_exist()
 
         self.config_path = get_user_config_path()
         default_preset = get_user_presets_dir() / "Default.json"
 
         if not self.config_path.exists():
-            self.config = load_json(default_preset, DEFAULT_CONFIG) if default_preset.exists() else _deepcopy_jsonish(DEFAULT_CONFIG)
+            self.config = (
+                load_json(default_preset, DEFAULT_CONFIG)
+                if default_preset.exists()
+                else _deepcopy_jsonish(DEFAULT_CONFIG)
+            )
         else:
             self.config = load_json(self.config_path, DEFAULT_CONFIG)
 
         save_json(self.config_path, self.config)
 
         self.engine = EngineThread()
-        self.capture_target: str | None = None
-        self._capturing_btn: Gtk.Button | None = None
 
         self._key_controller = Gtk.EventControllerKey()
         self._key_controller.connect("key-pressed", self.on_key_pressed)
@@ -715,6 +726,7 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         self.push_config_to_ui()
         self.connect("close-request", self.on_close)
 
+    # ---- presets ----
     def list_presets(self) -> list[str]:
         presets_dir = get_user_presets_dir()
         if not presets_dir.exists():
@@ -726,7 +738,10 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         names = self.list_presets()
         model = Gtk.StringList.new(names)
         self.preset_combo.set_model(model)
-        self.preset_combo.set_selected(names.index(select_name) if select_name in names else 0)
+        if select_name and select_name in names:
+            self.preset_combo.set_selected(names.index(select_name))
+        else:
+            self.preset_combo.set_selected(0)
 
     def on_load_preset(self, *_):
         if self.engine.thread and self.engine.thread.is_alive():
@@ -746,7 +761,9 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
             return
 
         preset_path = get_user_presets_dir() / names[idx]
-        self.config = normalize_config(load_json(preset_path, DEFAULT_CONFIG), DEFAULT_CONFIG)
+        preset_cfg = load_json(preset_path, DEFAULT_CONFIG)
+
+        self.config = normalize_config(preset_cfg, DEFAULT_CONFIG)
         self.push_config_to_ui()
         save_json(self.config_path, self.config)
         self.set_status(f"Loaded preset: {preset_path.name}")
@@ -779,7 +796,10 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
             if preset_path.exists():
 
                 def on_choice(overwrite: bool):
-                    self.set_status("Preset save canceled") if not overwrite else write_preset()
+                    if overwrite:
+                        write_preset()
+                    else:
+                        self.set_status("Preset save canceled")
 
                 ConfirmOverwriteWindow(self, preset_path.name, on_choice).present()
                 return
@@ -788,6 +808,7 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
 
         PresetSaveWindow(self, do_save).present()
 
+    # ---- lifecycle ----
     def on_close(self, *_):
         self.engine.stop()
         return False
@@ -795,11 +816,12 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
     def set_status(self, text: str):
         self.status_label.set_label(f"Status: {text}")
         running = (text == "Running" or text == "Paused")
-        self.start_btn.set_sensitive(not running and not self.capture_target)
+        self.start_btn.set_sensitive((not running) and (not self.capture_target))
         self.pause_btn.set_sensitive(running)
         self.stop_btn.set_sensitive(running)
         return False
 
+    # ---- controls ----
     def on_start(self, *_):
         if self.capture_target:
             self.set_status("Finish capture first")
@@ -816,9 +838,12 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         self.set_status("Stopped")
 
     def on_any_change(self, *_):
+        if self._syncing_ui:
+            return
         self.pull_ui_to_config()
         save_json(self.config_path, self.config)
 
+    # ---- capture ----
     def _set_capture_ui(self, capturing: bool, target_key: str | None):
         for _k, (_chk, _spin, _label, cap_btn) in self.key_widgets.items():
             cap_btn.set_sensitive(not capturing)
@@ -832,9 +857,8 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         else:
             self._capturing_btn = None
 
-        self.start_btn.set_sensitive(
-            not capturing and not (self.engine.thread and self.engine.thread.is_alive())
-        )
+        running = bool(self.engine.thread and self.engine.thread.is_alive())
+        self.start_btn.set_sensitive((not capturing) and (not running))
 
     def on_capture_clicked(self, _btn: Gtk.Button, key_name: str):
         if self.engine.thread and self.engine.thread.is_alive():
@@ -868,11 +892,15 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         evdev = max(1, min(400, self._gdk_keycode_to_evdev(keycode)))
         name = _friendly_key_name(keyval)
 
-        chk, spin, label, _cap = self.key_widgets[self.capture_target]
-        chk.set_active(True)
-        spin.set_value(evdev)
-        label.set_label(f"Key: {name}")
-        self.config["keys"][self.capture_target]["label"] = name
+        self._syncing_ui = True
+        try:
+            chk, spin, label, _cap = self.key_widgets[self.capture_target]
+            chk.set_active(True)
+            spin.set_value(evdev)
+            label.set_label(f"Key: {name}")
+            self.config["keys"][self.capture_target]["label"] = name
+        finally:
+            self._syncing_ui = False
 
         self.capture_target = None
         self._set_capture_ui(False, None)
@@ -882,25 +910,30 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         self.set_status("Stopped")
         return True
 
+    # ---- UI <-> config ----
     def push_config_to_ui(self):
-        for k, (chk, spin, label, _cap) in self.key_widgets.items():
-            chk.set_active(bool(self.config["keys"][k]["enabled"]))
-            spin.set_value(int(self.config["keys"][k]["code"]))
-            label.set_label(f"Key: {self.config['keys'][k].get('label', k)}")
+        self._syncing_ui = True
+        try:
+            for k, (chk, spin, label, _cap) in self.key_widgets.items():
+                chk.set_active(bool(self.config["keys"][k]["enabled"]))
+                spin.set_value(int(self.config["keys"][k]["code"]))
+                label.set_label(f"Key: {self.config['keys'][k].get('label', k)}")
 
-        self.diag_check.set_active(bool(self.config.get("enable_diagonals", True)))
-        self.min_delay.set_value(float(self.config.get("min_delay", 0.25)))
-        self.max_delay.set_value(float(self.config.get("max_delay", 0.90)))
-        self.press_min.set_value(float(self.config.get("press_min", 0.06)))
-        self.press_max.set_value(float(self.config.get("press_max", 0.20)))
+            self.diag_check.set_active(bool(self.config.get("enable_diagonals", True)))
+            self.min_delay.set_value(float(self.config.get("min_delay", 0.25)))
+            self.max_delay.set_value(float(self.config.get("max_delay", 0.90)))
+            self.press_min.set_value(float(self.config.get("press_min", 0.06)))
+            self.press_max.set_value(float(self.config.get("press_max", 0.20)))
 
-        self.idle_check.set_active(bool(self.config.get("idle_enabled", True)))
-        self.idle_chance.set_value(int(self.config.get("idle_chance", 10)))
-        self.idle_min.set_value(float(self.config.get("idle_min", 1.0)))
-        self.idle_max.set_value(float(self.config.get("idle_max", 3.5)))
+            self.idle_check.set_active(bool(self.config.get("idle_enabled", True)))
+            self.idle_chance.set_value(int(self.config.get("idle_chance", 10)))
+            self.idle_min.set_value(float(self.config.get("idle_min", 1.0)))
+            self.idle_max.set_value(float(self.config.get("idle_max", 3.5)))
 
-        self.double_check.set_active(bool(self.config.get("double_tap_enabled", True)))
-        self.double_chance.set_value(int(self.config.get("double_tap_chance", 8)))
+            self.double_check.set_active(bool(self.config.get("double_tap_enabled", True)))
+            self.double_chance.set_value(int(self.config.get("double_tap_chance", 8)))
+        finally:
+            self._syncing_ui = False
 
     def pull_ui_to_config(self):
         for k, (chk, spin, label, _cap) in self.key_widgets.items():
@@ -916,13 +949,21 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         self.config["max_delay"] = float(self.max_delay.get_value())
         if self.config["max_delay"] < self.config["min_delay"]:
             self.config["max_delay"] = self.config["min_delay"]
-            self.max_delay.set_value(self.config["max_delay"])
+            self._syncing_ui = True
+            try:
+                self.max_delay.set_value(self.config["max_delay"])
+            finally:
+                self._syncing_ui = False
 
         self.config["press_min"] = float(self.press_min.get_value())
         self.config["press_max"] = float(self.press_max.get_value())
         if self.config["press_max"] < self.config["press_min"]:
             self.config["press_max"] = self.config["press_min"]
-            self.press_max.set_value(self.config["press_max"])
+            self._syncing_ui = True
+            try:
+                self.press_max.set_value(self.config["press_max"])
+            finally:
+                self._syncing_ui = False
 
         self.config["idle_enabled"] = bool(self.idle_check.get_active())
         self.config["idle_chance"] = int(self.idle_chance.get_value())
@@ -930,7 +971,11 @@ class RUNKMaxWindow(Gtk.ApplicationWindow):
         self.config["idle_max"] = float(self.idle_max.get_value())
         if self.config["idle_max"] < self.config["idle_min"]:
             self.config["idle_max"] = self.config["idle_min"]
-            self.idle_max.set_value(self.config["idle_max"])
+            self._syncing_ui = True
+            try:
+                self.idle_max.set_value(self.config["idle_max"])
+            finally:
+                self._syncing_ui = False
 
         self.config["double_tap_enabled"] = bool(self.double_check.get_active())
         self.config["double_tap_chance"] = int(self.double_chance.get_value())
