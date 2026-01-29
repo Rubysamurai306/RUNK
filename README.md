@@ -1,4 +1,5 @@
-![RUNK Logo](https://1lm.me/cc.png)
+<img src="https://raw.githubusercontent.com/Rubysamurai306/RUNK/main/RUNK-MAX/assets/icon.png" width="160" />
+
 
 # RUNK-MAX ⚡️  
 ### *Rafael’s Ultimate Ninja Keyspammer (Wayland GUI)*
