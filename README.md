@@ -1,13 +1,13 @@
-<img src="https://raw.githubusercontent.com/Rubysamurai306/RUNK/main/RUNK-MAX/assets/icon.png" width="160" />
+<img src="https://raw.githubusercontent.com/Rubysamurai306/RUNK/main/RUNK-MAX/assets/icon.png" width="256" />
 
 
 # RUNK-MAX ⚡️  
-### *Rafael’s Ultimate Ninja Keyspammer (Wayland GUI)*
+### *Rafael’s Ultimate Ninja Keyspammer (Wayland)*
 
-**RUNK-MAX** is a **Wayland-first** GTK4 GUI that generates **randomized keyboard movement input** (built around **W/A/S/D**) using **`ydotool` + `ydotoold`** (uinput).  
+**RUNK-MAX** is a **Wayland-first** GTK4 GUI that generates **randomized keyboard movement input** (built around **W/A/S/D**) using **`ydotool`**.
 It exists because Wayland is locked down by design — and most “macro” tools are still X11-only.
 
-If you want **hands-free**, **human-ish**, **tunable** movement spam on Wayland: this is it.
+If you want **hands-free**, **human-like**, **tunable** movement spam on Wayland: this is it.
 
 ---
 
