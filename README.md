@@ -14,7 +14,7 @@ If you want **hands-free**, **human-like**, **tunable** movement spam on Wayland
 ## ✨ What It Does
 
 - ✅ Random movement cycling (W/A/S/D as standard.)
-- ✅ Optional diagonals (W+A, W+D, etc.)
+- ✅ Optional diagonal movement (W+A, W+D, etc.)
 - ✅ Configurable delays + press duration ranges
 - ✅ Idle gaps (probability-based “breaks”)
 - ✅ Double-taps (probability-based variation)
