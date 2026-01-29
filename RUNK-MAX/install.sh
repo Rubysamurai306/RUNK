@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
 # FILE: RUNK-MAX/install.sh
-#
-# Minimal installer:
-# - NO repo presets/config needed (app auto-creates presets + current.json in ~/.config/runk-max/)
-# - installs packages (Arch), udev rule, module load, wrapper, desktop entry, and icon to ~/assets/icon.png
-#
 set -euo pipefail
 
-log()  { printf "[RUNK] %s\n" "$*"; }
+# Logs MUST go to stderr so command substitutions stay clean.
+log()  { printf "[RUNK] %s\n" "$*" >&2; }
 warn() { printf "[RUNK][WARN] %s\n" "$*" >&2; }
 die()  { printf "[RUNK][ERR] %s\n" "$*" >&2; exit 1; }
 
@@ -93,7 +89,7 @@ install_launcher_wrapper() {
 #!/usr/bin/env bash
 set -euo pipefail
 MAX_DIR="$MAX_DIR"
-exec python3 "\$MAX_DIR/runk-max.py"
+exec python3 "\$MAX_DIR/runk-max.py" "\$@"
 EOF
 
   chmod +x "$wrapper"
@@ -110,14 +106,15 @@ install_icon_user_home_assets() {
 
   if [[ ! -f "$icon_src" ]]; then
     warn "Icon not found at $icon_src — falling back to Icon=keyboard"
-    echo "keyboard"
+    printf "%s\n" "keyboard"
     return 0
   fi
 
   log "Installing icon to: $icon_dst"
   cp "$icon_src" "$icon_dst"
   chown "$TARGET_USER":"$TARGET_USER" "$icon_dst"
-  echo "$icon_dst"
+
+  printf "%s\n" "$icon_dst"
 }
 
 render_desktop() {
@@ -177,22 +174,6 @@ print_post_install() {
   cat <<EOF
 
 [RUNK] Install complete.
-
-Installed/configured:
-- Packages: ydotool, jq, python, python-gobject, gtk4
-- udev rule: /etc/udev/rules.d/99-uinput-runk.rules
-- module load: /etc/modules-load.d/uinput-runk.conf
-- launcher: $TARGET_HOME/.local/bin/runk-max
-- desktop entry: $TARGET_HOME/.local/share/applications/runk-max.desktop
-- icon (canonical): $TARGET_HOME/assets/icon.png (if $MAX_DIR/assets/icon.png existed)
-
-Notes:
-- App will auto-create:
-  - ~/.config/runk-max/current.json
-  - ~/.config/runk-max/presets/{Default.json,Gaming.json,subtle.json}
-
-Important:
-- If the installer added $TARGET_USER to the uinput group, you MUST log out and log back in.
 
 Launch:
 - KDE launcher: search "RUNK-MAX"
