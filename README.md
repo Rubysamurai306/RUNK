@@ -5,7 +5,7 @@
 ### *Rafael’s Ultimate Ninja Keyspammer (Wayland)*
 
 **RUNK-MAX** is a **Wayland-first** GTK4 GUI that generates **randomized keyboard movement input** (built around **W/A/S/D**, this program was primarily made with gaming in mind.) using **`ydotool`**.
-It exists because Wayland is locked down by design — and most “macro” tools are still X11-only.
+I made this program simply because i could not manage to find a good macro script for wayland anywhere that wasnt severely broken or deprecated. 
 
 If you want **hands-free**, **human-like**, **tunable** movement spam on Wayland: this is it.
 
@@ -38,6 +38,7 @@ RUNK-MAX uses **uinput** via `ydotool`, which works cleanly on Wayland **when yo
 
 ⚠️ **Should work on:**  
 - all **Arch-based** distros (mainly all that use Pacman as a package mangager. support for other distros like ubuntu-based is coming.)
+- all other distros should work flawlessly scriptwise, but you will have to modify the install file to install the correct dependencies for the script manually until i have implemented it myself.
 
 🧪 **Future:**  
 More distros will be tested and installers adapted over time.
