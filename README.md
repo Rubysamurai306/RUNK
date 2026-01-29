@@ -4,7 +4,7 @@
 # RUNK-MAX ⚡️  
 ### *Rafael’s Ultimate Ninja Keyspammer (Wayland)*
 
-**RUNK-MAX** is a **Wayland-first** GTK4 GUI that generates **randomized keyboard movement input** (built around **W/A/S/D**) using **`ydotool`**.
+**RUNK-MAX** is a **Wayland-first** GTK4 GUI that generates **randomized keyboard movement input** (built around **W/A/S/D**, this program was primarily made with gaming in mind.) using **`ydotool`**.
 It exists because Wayland is locked down by design — and most “macro” tools are still X11-only.
 
 If you want **hands-free**, **human-like**, **tunable** movement spam on Wayland: this is it.
@@ -13,14 +13,14 @@ If you want **hands-free**, **human-like**, **tunable** movement spam on Wayland
 
 ## ✨ What It Does
 
-- ✅ Random movement cycling (W/A/S/D)
+- ✅ Random movement cycling (W/A/S/D as standard.)
 - ✅ Optional diagonals (W+A, W+D, etc.)
 - ✅ Configurable delays + press duration ranges
 - ✅ Idle gaps (probability-based “breaks”)
 - ✅ Double-taps (probability-based variation)
 - ✅ Presets (load/save profiles instantly)
-- ✅ Key capture (map keys without guessing codes)
-- ✅ User-space config (keeps the repo clean)
+- ✅ Key capture (map keys without having to dig for the correct keybind numerical values)
+- ✅ User-space config (you can also make and save your own presets easily from within the GUI)
 
 ---
 
@@ -60,7 +60,7 @@ cd RUNK/RUNK-MAX
 sudo bash install.sh
 ```
 ---
-**RUNK-minimal**
+## **RUNK-minimal**
 this one is much more barebones, with just 2 files needed. only run the installer then you launch the actual program itself from the terminal. NO GUI. NO PAUSE. if you want to pause the keyspammer, simply **CTRL+C** and kill the app from within the terminal.
 ```
 cd RUNK/RUNK-minimal
