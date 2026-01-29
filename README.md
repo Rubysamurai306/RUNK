@@ -34,14 +34,10 @@ RUNK-MAX uses **uinput** via `ydotool`, which works cleanly on Wayland **when yo
 ## 🧩 Compatibility
 
 ✅ **Tested on:**  
-- **CachyOS** (Wayland)  
-- **Lumine bootloader** environment
+- **CachyOS** (KDE,Wayland) on **Lumine bootloader**
 
 ⚠️ **Should work on:**  
-- Most **Arch-based** distros (and likely others) as long as:
-  - `ydotool` is available
-  - GTK4 + python-gobject are installed
-  - uinput permissions are set correctly
+- all **Arch-based** distros (mainly all that use Pacman as a package mangager. support for other distros like ubuntu-based is coming.)
 
 🧪 **Future:**  
 More distros will be tested and installers adapted over time.
@@ -62,3 +58,11 @@ That’s why you **must run the installer as root**:
 ```bash
 cd RUNK/RUNK-MAX
 sudo bash install.sh
+```
+---
+**RUNK-minimal**
+this one is much more barebones, with just 2 files needed. only run the installer then you launch the actual program itself from the terminal. NO GUI. NO PAUSE. if you want to pause the keyspammer, simply **CTRL+C** and kill the app from within the terminal.
+```
+cd RUNK/RUNK-minimal
+sudo bash install.sh
+```
