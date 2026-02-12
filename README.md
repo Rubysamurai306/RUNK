@@ -1,60 +1,65 @@
 <img src="https://raw.githubusercontent.com/Rubysamurai306/RUNK/main/RUNK-MAX/assets/icon.png" width="256" />
 
 
-# RUNK-MAX ⚡️  
+# RUNK-MAX ⚡️
 ### *Rafael’s Ultimate Ninja Keyspammer (Wayland)*
 
-**RUNK-MAX** is a **Wayland-first** GTK4 GUI that generates **randomized keyboard movement input** (built around **W/A/S/D**, this program was primarily made with gaming in mind.) using **`ydotool`**.
-I made this program simply because i could not manage to find a good macro script for wayland anywhere that wasnt severely broken or deprecated. 
+**RUNK-MAX** is a **Wayland-first** GTK4 GUI keyspammer that generates **randomized, human-like movement input** (**W/A/S/D** by default) using **`ydotool`**.
 
-If you want **hands-free**, **human-like**, **tunable** movement spam on Wayland: this is it.
+I made it because most Wayland macro options I found were either **deprecated**, **broken**, or **X11-only**.
 
----
-
-## ✨ What It Does
-
-- ✅ Random movement cycling (W/A/S/D as standard.)
-- ✅ Optional diagonal movement (W+A, W+D, etc.)
-- ✅ Configurable delays + press duration ranges
-- ✅ Idle gaps (probability-based “breaks”)
-- ✅ Double-taps (probability-based variation)
-- ✅ Presets (load/save profiles instantly)
-- ✅ Key capture (map keys without having to dig for the correct keybind numerical values)
-- ✅ User-space config (you can also make and save your own presets easily from within the GUI)
+If you want **hands-free**, **tunable** movement spam on Wayland: this is it.
 
 ---
 
-## 🧠 Why Wayland?
+## What It Does
 
-Wayland blocks traditional input injection used by X11 macro tools.  
-RUNK-MAX uses **uinput** via `ydotool`, which works cleanly on Wayland **when your user has permission to use `/dev/uinput`**.
+-  Random movement cycling (W/A/S/D by default)
+-  Optional diagonal movement (W+A, W+D, etc.)
+-  Configurable delay + press duration ranges
+-  Probability-based idle breaks (random “gaps”)
+-  Probability-based double-taps (variation)
+-  Presets (save/load profiles instantly)
+-  Key capture (map keys without hunting keycodes)
+-  User-space config (easy preset creation from the GUI)
 
 ---
 
-## 🧩 Compatibility
+## Why Wayland?
 
-✅ **Tested on:**  
-- **CachyOS** (KDE,Wayland) on **Lumine bootloader**
+Wayland blocks a lot of traditional X11-style input injection.
 
-⚠️ **Should work on:**  
-- all **Arch-based** distros (mainly all that use Pacman as a package mangager. support for other distros like ubuntu-based is coming.)
-- all other distros should work flawlessly scriptwise, but you will have to modify the install file to install the correct dependencies for the script manually until i have implemented it myself.
+RUNK-MAX uses **uinput** via `ydotool`, which works on Wayland **as long as your user has permission to access**:
 
-🧪 **Future:**  
+- `/dev/uinput`
+
+---
+
+## Compatibility
+
+### Tested on
+- **CachyOS** (KDE Wayland) using **Lumine**
+
+### Should work on
+- Most **Arch-based** distros (Pacman)
+- Other distros should work script-wise, but you may need to adjust the installer/deps until official support lands
+
+### Future
 More distros will be tested and installers adapted over time.
 
 ---
 
-## 🚀 Install (Arch / CachyOS)
+## Install (Arch / CachyOS)
 
-RUNK-MAX needs system changes:
-- installs packages (pacman)
-- creates a udev rule for `/dev/uinput`
-- ensures the `uinput` module loads
-- adds your user to the `uinput` group
-- installs `.desktop` launcher + wrapper
+The installer performs system-level setup:
 
-That’s why you **must run the installer as root**:
+- Installs dependencies (pacman)
+- Creates a udev rule for `/dev/uinput`
+- Ensures the `uinput` module loads
+- Adds your user to the `uinput` group
+- Installs a `.desktop` launcher + wrapper
+
+Because of that, you **must run the installer as root**:
 
 ```bash
 cd RUNK/RUNK-MAX
